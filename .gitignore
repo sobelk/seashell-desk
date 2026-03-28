@@ -1,1 +1,4 @@
 desk/**
+.credentials/
+node_modules/
+src/.env
