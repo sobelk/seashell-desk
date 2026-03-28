@@ -207,6 +207,30 @@ export class GmailService {
     }))
   }
 
+  /**
+   * Find a label by name, creating it if it doesn't exist.
+   */
+  async ensureLabel(name: string): Promise<GmailLabel> {
+    await this.ensureAuthenticated()
+    const labels = await this.listLabels()
+    const existing = labels.find((l) => l.name === name)
+    if (existing) return existing
+
+    const res = await this.gmail.users.labels.create({
+      userId: 'me',
+      requestBody: {
+        name,
+        labelListVisibility: 'labelShow',
+        messageListVisibility: 'show',
+      },
+    })
+    return {
+      id: res.data.id!,
+      name: res.data.name!,
+      type: res.data.type ?? 'user',
+    }
+  }
+
   async archiveMessage(id: string): Promise<void> {
     await this.ensureAuthenticated()
     await this.gmail.users.messages.modify({
@@ -257,9 +281,39 @@ export class GmailService {
     part: gmail_v1.Schema$MessagePart | undefined,
     attachments: GmailAttachment[],
   ): string {
-    if (!part) return ''
+    this.collectAttachments(part, attachments)
 
-    // Named parts with attachment IDs are attachments, not body
+    const plain = this.findPart(part, 'text/plain')
+    if (plain?.body?.data) {
+      return Buffer.from(plain.body.data, 'base64url').toString('utf-8')
+    }
+
+    const html = this.findPart(part, 'text/html')
+    if (html?.body?.data) {
+      return this.stripHtml(Buffer.from(html.body.data, 'base64url').toString('utf-8'))
+    }
+
+    return ''
+  }
+
+  private findPart(
+    part: gmail_v1.Schema$MessagePart | undefined,
+    mimeType: string,
+  ): gmail_v1.Schema$MessagePart | undefined {
+    if (!part) return undefined
+    if (part.mimeType === mimeType && part.body?.data) return part
+    for (const child of part.parts ?? []) {
+      const found = this.findPart(child, mimeType)
+      if (found) return found
+    }
+    return undefined
+  }
+
+  private collectAttachments(
+    part: gmail_v1.Schema$MessagePart | undefined,
+    attachments: GmailAttachment[],
+  ): void {
+    if (!part) return
     if (part.filename && part.body?.attachmentId) {
       attachments.push({
         id: part.body.attachmentId,
@@ -267,30 +321,25 @@ export class GmailService {
         mimeType: part.mimeType ?? 'application/octet-stream',
         size: part.body.size ?? 0,
       })
-      return ''
+      return
     }
-
-    if (part.mimeType === 'text/plain' && part.body?.data) {
-      return Buffer.from(part.body.data, 'base64url').toString('utf-8')
+    for (const child of part.parts ?? []) {
+      this.collectAttachments(child, attachments)
     }
+  }
 
-    if (part.parts) {
-      // Prefer text/plain within multipart
-      const plainPart = part.parts.find((p) => p.mimeType === 'text/plain')
-      if (plainPart?.body?.data) {
-        return Buffer.from(plainPart.body.data, 'base64url').toString('utf-8')
-      }
-      // Recurse into nested multipart
-      return part.parts
-        .map((p) => this.extractBody(p, attachments))
-        .filter(Boolean)
-        .join('\n')
-    }
-
-    if (part.body?.data) {
-      return Buffer.from(part.body.data, 'base64url').toString('utf-8')
-    }
-
-    return ''
+  private stripHtml(html: string): string {
+    return html
+      .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
+      .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/&nbsp;/g, ' ')
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"')
+      .replace(/&#39;/g, "'")
+      .replace(/\s+/g, ' ')
+      .trim()
   }
 }

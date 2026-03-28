@@ -8,7 +8,13 @@
  */
 
 import { z } from 'zod'
+import { writeFileSync, mkdirSync, existsSync } from 'fs'
+import path from 'path'
 import { GmailService } from '../services/gmail.js'
+
+const DESK_LABEL = '🐚 desk'
+// src/tools/ → src/ → repo root → desk/input/
+const DEFAULT_DESK_INPUT_DIR = path.join(import.meta.dirname, '..', '..', 'desk', 'input')
 
 // ---------------------------------------------------------------------------
 // Tool definitions (Anthropic tool_use format)
@@ -18,7 +24,7 @@ export const gmailTools = [
   {
     name: 'gmail_search',
     description:
-      'Search Gmail messages using Gmail search syntax. Returns matching messages including headers, body text, and attachment metadata. Use this to find emails before reading or acting on them.',
+      'Search Gmail messages using Gmail search syntax. Returns matching messages including headers, plain-text body, and attachment metadata. The body field contains the full plain-text content. Use gmail_get_attachment to download attachments or gmail_read to re-fetch a single message.',
     input_schema: {
       type: 'object' as const,
       properties: {
@@ -38,7 +44,7 @@ export const gmailTools = [
   {
     name: 'gmail_read',
     description:
-      'Fetch a single Gmail message by ID. Returns full headers, decoded body text, and a list of attachments (with attachment IDs for downloading).',
+      'Fetch a single Gmail message by ID. Useful for re-fetching a specific message without searching. Returns headers, plain-text body, and attachment metadata.',
     input_schema: {
       type: 'object' as const,
       properties: {
@@ -122,6 +128,25 @@ export const gmailTools = [
       required: ['message_id'],
     },
   },
+  {
+    name: 'gmail_process_inbox',
+    description:
+      'Fetch N emails from the inbox that have not yet been processed (i.e. do not have the "🐚 desk" label), write each as a JSON file to the desk input directory, and apply the "🐚 desk" label. Emails are returned most recent first. Run repeatedly to work through the inbox in batches.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        n: {
+          type: 'number',
+          description: 'Number of emails to process. Default 5.',
+        },
+        desk_input_dir: {
+          type: 'string',
+          description: 'Path to the desk input directory. Defaults to desk/input/ at the repo root.',
+        },
+      },
+      required: [],
+    },
+  },
 ] as const
 
 export type GmailToolName = (typeof gmailTools)[number]['name']
@@ -153,6 +178,11 @@ const ModifyLabelsInput = z.object({
   message_id: z.string(),
   add_label_ids: z.array(z.string()).optional().default([]),
   remove_label_ids: z.array(z.string()).optional().default([]),
+})
+
+const ProcessInboxInput = z.object({
+  n: z.number().min(1).max(50).optional().default(5),
+  desk_input_dir: z.string().optional(),
 })
 
 // ---------------------------------------------------------------------------
@@ -203,6 +233,38 @@ export async function runGmailTool(
         const { message_id, add_label_ids, remove_label_ids } = ModifyLabelsInput.parse(input)
         await service.modifyLabels(message_id, add_label_ids, remove_label_ids)
         return { success: true, message_id }
+      }
+
+      case 'gmail_process_inbox': {
+        const { n, desk_input_dir } = ProcessInboxInput.parse(input)
+        const inputDir = desk_input_dir ?? DEFAULT_DESK_INPUT_DIR
+
+        // Ensure the desk label exists
+        const label = await service.ensureLabel(DESK_LABEL)
+
+        // Fetch inbox emails not yet labelled — request slightly more to
+        // account for any edge cases, then trim to n
+        const messages = await service.searchMessages(
+          `in:inbox -label:"${DESK_LABEL}"`,
+          n,
+        )
+
+        if (!existsSync(inputDir)) mkdirSync(inputDir, { recursive: true })
+
+        const written: string[] = []
+        for (const message of messages) {
+          const envelope = {
+            type: 'gmail.message',
+            source: 'gmail.personal',
+            ...message,
+          }
+          const filename = `${message.id}.json`
+          writeFileSync(path.join(inputDir, filename), JSON.stringify(envelope, null, 2))
+          await service.modifyLabels(message.id, [label.id], [])
+          written.push(filename)
+        }
+
+        return { written, count: written.length, labelApplied: DESK_LABEL }
       }
     }
   } catch (err) {
