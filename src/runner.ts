@@ -46,6 +46,17 @@ export interface RunAgentOptions {
    *   'verbose' — also log inputs and full outputs
    */
   logLevel?: 'silent' | 'normal' | 'verbose'
+  /**
+   * Called after each tool executes. Useful for tracking agent-originated
+   * file writes to prevent re-triggering on those paths.
+   */
+  onToolExecuted?: (toolName: string, input: unknown, output: unknown) => void
+  /**
+   * Called at the start of each round. If it returns a non-empty string,
+   * that text is appended to the tool_results user message as a text block,
+   * letting the watcher inject external file-change events mid-run.
+   */
+  getPendingInjection?: () => string | null
 }
 
 export interface RunAgentResult {
@@ -109,6 +120,8 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
     maxRounds = DEFAULT_MAX_ROUNDS,
     model = DEFAULT_MODEL,
     logLevel = 'normal',
+    onToolExecuted,
+    getPendingInjection,
   } = options
 
   const log = (msg: string) => {
@@ -176,17 +189,36 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
           output = { error: err instanceof Error ? err.message : String(err) }
         }
 
+        onToolExecuted?.(block.name, block.input, output)
         log(`[tool]  ${block.name.padEnd(26)} ${formatOutput(output)}`)
+
+        // If the tool returned a _rawContent sentinel, use it directly as the
+        // content array so the model receives image/document blocks intact.
+        const rawContent =
+          output !== null &&
+          typeof output === 'object' &&
+          '_rawContent' in (output as object)
+            ? (output as { _rawContent: Anthropic.ToolResultBlockParam['content'] })._rawContent
+            : undefined
 
         return {
           type: 'tool_result' as const,
           tool_use_id: block.id,
-          content: JSON.stringify(output),
+          ...(rawContent !== undefined
+            ? { content: rawContent }
+            : { content: JSON.stringify(output) }),
         }
       }),
     )
 
-    messages.push({ role: 'user', content: toolResults })
+    // Append any externally-injected context (file changes from the watcher)
+    // as a text block alongside the tool results.
+    const injection = getPendingInjection?.()
+    const userContent: Anthropic.MessageParam['content'] = injection
+      ? [...toolResults, { type: 'text' as const, text: injection }]
+      : toolResults
+
+    messages.push({ role: 'user', content: userContent })
     rounds++
   }
 

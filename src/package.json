@@ -6,9 +6,11 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "tool-call": "bun tool-call.ts",
+    "sync": "bun sync.ts",
     "triage": "bun triage.ts",
     "triage:verbose": "bun triage.ts --verbose",
-    "triage:dry-run": "bun triage.ts --dry-run"
+    "triage:dry-run": "bun triage.ts --dry-run",
+    "watch": "bun watch.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.80.0",

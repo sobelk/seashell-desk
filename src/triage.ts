@@ -12,9 +12,9 @@
  *   bun run triage --dry-run    # print system prompt and tool list, then exit
  */
 
-import { readFileSync } from 'fs'
 import path from 'path'
 import { runAgent, type ToolDefinition } from './runner.js'
+import { buildSystemPrompt } from './prompt.js'
 import { GoogleAuth } from './services/google-auth.js'
 import { GmailService } from './services/gmail.js'
 import { CalendarService } from './services/calendar.js'
@@ -25,7 +25,6 @@ import { filesystemTools, runFilesystemTool, type FilesystemToolName } from './t
 
 const DESK_ROOT = path.join(import.meta.dirname, '..', 'desk')
 const AGENT_MD = path.join(DESK_ROOT, 'input', 'AGENT.md')
-const TOOLS_MD = path.join(DESK_ROOT, 'TOOLS.md')
 
 // ---------------------------------------------------------------------------
 // Parse args
@@ -40,20 +39,10 @@ const logLevel = args.includes('--verbose') || args.includes('-v')
     : 'normal'
 
 // ---------------------------------------------------------------------------
-// System prompt: AGENT.md + TOOLS.md
+// System prompt — assembled via SYSTEM.md cascade + AGENT.md + TOOLS.md
 // ---------------------------------------------------------------------------
 
-const agentMd = readFileSync(AGENT_MD, 'utf8')
-const toolsMd = readFileSync(TOOLS_MD, 'utf8')
-const today = new Date().toISOString().slice(0, 10)
-
-const systemPrompt = `Today's date is ${today}.
-
-${agentMd}
-
----
-
-${toolsMd}`
+const systemPrompt = buildSystemPrompt(AGENT_MD)
 
 // ---------------------------------------------------------------------------
 // All tools

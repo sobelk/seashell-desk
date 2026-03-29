@@ -23,6 +23,41 @@ import path from 'path'
 const DESK_ROOT = path.resolve(path.join(import.meta.dirname, '..', '..', 'desk'))
 
 // ---------------------------------------------------------------------------
+// File classification
+// ---------------------------------------------------------------------------
+
+// Text files: content embedded directly as a UTF-8 string in the tool result.
+const TEXT_EXTS = new Set([
+  '.txt', '.md', '.csv', '.json', '.yaml', '.yml',
+  '.toml', '.xml', '.html', '.htm', '.log', '.conf', '.ini', '.env',
+  '.js', '.ts', '.jsx', '.tsx', '.py', '.rb', '.sh', '.bash', '.zsh',
+])
+
+// Image files: delivered as an Anthropic image content block (base64).
+const IMAGE_MEDIA_TYPES: Record<string, string> = {
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.png': 'image/png',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
+}
+
+// Document files: delivered as an Anthropic document content block (base64).
+const DOCUMENT_MEDIA_TYPES: Record<string, string> = {
+  '.pdf': 'application/pdf',
+}
+
+type FileKind = 'text' | 'image' | 'document' | 'binary'
+
+function classifyFile(filePath: string): FileKind {
+  const ext = path.extname(filePath).toLowerCase()
+  if (TEXT_EXTS.has(ext)) return 'text'
+  if (IMAGE_MEDIA_TYPES[ext]) return 'image'
+  if (DOCUMENT_MEDIA_TYPES[ext]) return 'document'
+  return 'binary'
+}
+
+// ---------------------------------------------------------------------------
 // Path safety
 // ---------------------------------------------------------------------------
 
@@ -34,6 +69,7 @@ function resolveDeskPath(p: string): string {
   return resolved
 }
 
+
 // ---------------------------------------------------------------------------
 // Tool definitions (Anthropic tool_use format)
 // ---------------------------------------------------------------------------
@@ -42,7 +78,7 @@ export const filesystemTools = [
   {
     name: 'list_directory',
     description:
-      'List the contents of a directory within desk/. Returns file names, types (file/directory), and sizes. Path is relative to desk/ (e.g. "input/" or "projects/finance/files/").',
+      'List the contents of a directory within desk/. Returns file names, types (file/directory), sizes, and for files: kind (text/image/document/binary) indicating how read_file will handle them. Path is relative to desk/ (e.g. "input/" or "projects/finance/files/").',
     input_schema: {
       type: 'object' as const,
       properties: {
@@ -57,7 +93,7 @@ export const filesystemTools = [
   {
     name: 'read_file',
     description:
-      'Read the contents of a text file within desk/. Returns file contents as a string. For JSON files, returns the raw JSON text. Path is relative to desk/.',
+      'Read a file within desk/. Behavior depends on file kind (visible in list_directory): text files return UTF-8 content; image files (jpg/png/gif/webp) return an image attachment; document files (pdf) return a document attachment; binary files return an error. Path is relative to desk/.',
     input_schema: {
       type: 'object' as const,
       properties: {
@@ -200,10 +236,12 @@ export async function runFilesystemTool(toolName: FilesystemToolName, input: unk
             try {
               if (e.isFile()) size = statSync(full).size
             } catch { /* ignore */ }
+            const kind: FileKind | undefined = e.isFile() ? classifyFile(e.name) : undefined
             return {
               name: e.name,
               type: e.isDirectory() ? 'directory' : 'file',
               ...(size !== undefined ? { size } : {}),
+              ...(kind !== undefined ? { kind } : {}),
             }
           }),
         }
@@ -215,6 +253,35 @@ export async function runFilesystemTool(toolName: FilesystemToolName, input: unk
         const stat = statSync(resolved)
         if (!stat.isFile()) return { error: `Not a file: ${filePath}` }
 
+        const kind = classifyFile(filePath)
+
+        if (kind === 'image') {
+          const mediaType = IMAGE_MEDIA_TYPES[path.extname(filePath).toLowerCase()]
+          const data = readFileSync(resolved).toString('base64')
+          return {
+            _rawContent: [
+              { type: 'text', text: `File: ${filePath} (${stat.size} bytes, ${mediaType})` },
+              { type: 'image', source: { type: 'base64', media_type: mediaType, data } },
+            ],
+          }
+        }
+
+        if (kind === 'document') {
+          const mediaType = DOCUMENT_MEDIA_TYPES[path.extname(filePath).toLowerCase()]
+          const data = readFileSync(resolved).toString('base64')
+          return {
+            _rawContent: [
+              { type: 'text', text: `File: ${filePath} (${stat.size} bytes, ${mediaType})` },
+              { type: 'document', source: { type: 'base64', media_type: mediaType, data } },
+            ],
+          }
+        }
+
+        if (kind === 'binary') {
+          return { error: `Binary file cannot be read: ${filePath} (${stat.size} bytes). Use copy_file to move it.` }
+        }
+
+        // text
         const buf = readFileSync(resolved)
         const truncated = buf.length > max_bytes
         const content = buf.slice(0, max_bytes).toString('utf8')
