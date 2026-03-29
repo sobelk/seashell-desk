@@ -59,7 +59,7 @@ export class RunLogger {
     this.write({
       type: 'run:start',
       agentPath,
-      changes: changes.map((c) => `${c.event[0]} ${c.path}`),
+      changes: changes.map((c) => `${c.event}: ${c.path}`),
     })
   }
 

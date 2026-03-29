@@ -54,10 +54,7 @@ function isIgnored(relPath: string): boolean {
 }
 
 function describeChanges(changes: FileChange[]): string {
-  return changes.map((c) => {
-    const icon = c.event === 'added' ? '+' : c.event === 'removed' ? '-' : '~'
-    return `  ${icon} ${c.path}`
-  }).join('\n')
+  return changes.map((c) => `  ${c.event}: ${c.path}`).join('\n')
 }
 
 export class DeskWatcher extends EventEmitter {
@@ -174,6 +171,9 @@ export class DeskWatcher extends EventEmitter {
 
     const existing = this.entries.get(agentMdPath)
     if (existing) {
+      // Deduplicate by path: last event for a given path wins
+      const idx = existing.changes.findIndex((c) => c.path === change.path)
+      if (idx !== -1) existing.changes.splice(idx, 1)
       existing.changes.push(change)
       if (existing.debounceTimer !== null) {
         clearTimeout(existing.debounceTimer)
@@ -248,24 +248,30 @@ export class DeskWatcher extends EventEmitter {
     return { error: `Unknown tool: ${toolName}` }
   }
 
-  private trackToolOutput(toolName: string, input: unknown, output: unknown) {
+  private trackPath(p: unknown) {
+    if (typeof p === 'string') {
+      const abs = path.isAbsolute(p) ? p : path.join(DESK_ROOT, p)
+      this.originatedPaths.add(path.relative(DESK_ROOT, abs))
+    }
+  }
+
+  // Called synchronously before tool execution — pre-tracks paths we know will be touched
+  private preTrackToolInput(toolName: string, input: unknown) {
     if (typeof input !== 'object' || input === null) return
     const inp = input as Record<string, unknown>
-    const track = (p: unknown) => {
-      if (typeof p === 'string') {
-        const abs = path.isAbsolute(p) ? p : path.join(DESK_ROOT, p)
-        this.originatedPaths.add(path.relative(DESK_ROOT, abs))
-      }
-    }
-    if (toolName === 'write_file') track(inp.path)
-    if (toolName === 'copy_file') track(inp.dst)
-    if (toolName === 'delete_file') track(inp.path)
-    if (toolName === 'make_directory') track(inp.path)
-    if (toolName === 'gmail_get_attachment') track(inp.output_path)
+    if (toolName === 'write_file') this.trackPath(inp.path)
+    if (toolName === 'copy_file') { this.trackPath(inp.src); this.trackPath(inp.dst) }
+    if (toolName === 'delete_file') this.trackPath(inp.path)
+    if (toolName === 'make_directory') this.trackPath(inp.path)
+    if (toolName === 'gmail_get_attachment') this.trackPath(inp.output_path)
+  }
+
+  // Called after tool execution — tracks paths from tool output (e.g. task file paths)
+  private trackToolOutput(toolName: string, _input: unknown, output: unknown) {
     if (toolName === 'create_task' || toolName === 'complete_task') {
       if (typeof output === 'object' && output !== null && 'paths' in output) {
         const paths = (output as { paths: unknown }).paths
-        if (Array.isArray(paths)) paths.forEach(track)
+        if (Array.isArray(paths)) paths.forEach((p) => this.trackPath(p))
       }
     }
   }
@@ -308,6 +314,7 @@ export class DeskWatcher extends EventEmitter {
       logLevel: this.logLevel,
       onLog: (msg) => this.emit('agent:log', agentMdPath, msg),
       onWaiting: (waiting) => this.emit('agent:waiting', agentMdPath, waiting),
+      onToolStart: (name, input) => this.preTrackToolInput(name, input),
       onToolExecuted: (name, input, output) => this.trackToolOutput(name, input, output),
       onRound: (data) => logger.logRound(data),
       getPendingInjection,

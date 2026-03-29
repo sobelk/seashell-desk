@@ -47,6 +47,12 @@ export interface RunAgentOptions {
    */
   logLevel?: 'silent' | 'normal' | 'verbose'
   /**
+   * Called synchronously before each tool executes (before the first await).
+   * Use to pre-track paths so FS watch events fired during tool execution
+   * are suppressed correctly.
+   */
+  onToolStart?: (toolName: string, input: unknown) => void
+  /**
    * Called after each tool executes. Useful for tracking agent-originated
    * file writes to prevent re-triggering on those paths.
    */
@@ -150,6 +156,7 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
     maxRounds = DEFAULT_MAX_ROUNDS,
     model = DEFAULT_MODEL,
     logLevel = 'normal',
+    onToolStart,
     onToolExecuted,
     getPendingInjection,
     onLog,
@@ -222,6 +229,7 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
     const toolResults = await Promise.all(
       toolUseBlocks.map(async (block) => {
         logVerbose(`[tool]  → ${block.name}(${formatInput(block.input)})`)
+        onToolStart?.(block.name, block.input)
 
         let output: unknown
         try {
