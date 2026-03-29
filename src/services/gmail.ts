@@ -1,22 +1,5 @@
 import { google, type gmail_v1 } from 'googleapis'
-import { type OAuth2Client } from 'google-auth-library'
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs'
-import { createServer } from 'http'
-import { URL } from 'url'
-import path from 'path'
-
-const SCOPES = [
-  'https://www.googleapis.com/auth/gmail.readonly',
-  'https://www.googleapis.com/auth/gmail.modify',
-]
-
-// .credentials/ lives at the repo root, two levels above src/services/
-const CREDENTIALS_DIR = path.join(import.meta.dirname, '..', '..', '.credentials')
-const TOKEN_PATH = path.join(CREDENTIALS_DIR, 'gmail-token.json')
-const OAUTH_CLIENT_PATH = path.join(CREDENTIALS_DIR, 'gmail-oauth-client.json')
-const REDIRECT_PORT = 3000
-// Installed-app OAuth clients accept any http://localhost:{port}
-const REDIRECT_URI = `http://localhost:${REDIRECT_PORT}`
+import { GoogleAuth } from './google-auth.js'
 
 export interface GmailMessage {
   id: string
@@ -45,123 +28,18 @@ export interface GmailLabel {
 }
 
 export class GmailService {
-  private client: OAuth2Client
   private gmail: gmail_v1.Gmail
-  private authPromise: Promise<void> | null = null
 
-  constructor(clientId: string, clientSecret: string) {
-    this.client = new google.auth.OAuth2(clientId, clientSecret, REDIRECT_URI)
-    this.gmail = google.gmail({ version: 'v1', auth: this.client })
+  constructor(private auth: GoogleAuth) {
+    this.gmail = google.gmail({ version: 'v1', auth: auth.client })
   }
 
-  /** Called automatically before any API method. Safe to call multiple times. */
-  private ensureAuthenticated(): Promise<void> {
-    if (!this.authPromise) {
-      this.authPromise = this.authenticate()
-    }
-    return this.authPromise
-  }
-
-  /**
-   * Create a GmailService from environment variables, falling back to the
-   * downloaded OAuth client JSON at .credentials/gmail-oauth-client.json.
-   */
   static fromEnv(): GmailService {
-    const clientId = process.env['GMAIL_CLIENT_ID']
-    const clientSecret = process.env['GMAIL_CLIENT_SECRET']
-
-    if (clientId && clientSecret) {
-      return new GmailService(clientId, clientSecret)
-    }
-
-    if (existsSync(OAUTH_CLIENT_PATH)) {
-      const raw = JSON.parse(readFileSync(OAUTH_CLIENT_PATH, 'utf-8'))
-      const client = raw.web ?? raw.installed
-      if (!client?.client_id || !client?.client_secret) {
-        throw new Error(`Could not parse OAuth client credentials from ${OAUTH_CLIENT_PATH}`)
-      }
-      return new GmailService(client.client_id, client.client_secret)
-    }
-
-    throw new Error(
-      'Gmail credentials not found. Set GMAIL_CLIENT_ID + GMAIL_CLIENT_SECRET env vars, ' +
-        `or place the OAuth client JSON at ${OAUTH_CLIENT_PATH}`,
-    )
+    return new GmailService(GoogleAuth.fromEnv())
   }
 
-  async authenticate(): Promise<void> {
-    if (existsSync(TOKEN_PATH)) {
-      const tokens = JSON.parse(readFileSync(TOKEN_PATH, 'utf-8'))
-      this.client.setCredentials(tokens)
-      // Persist refreshed tokens automatically
-      this.client.on('tokens', (newTokens) => {
-        this.saveTokens(newTokens as Record<string, unknown>)
-      })
-      return
-    }
-    await this.runAuthFlow()
-  }
-
-  private saveTokens(tokens: Record<string, unknown>): void {
-    if (!existsSync(CREDENTIALS_DIR)) {
-      mkdirSync(CREDENTIALS_DIR, { recursive: true })
-    }
-    // Merge to preserve refresh_token across access_token refreshes
-    const existing = existsSync(TOKEN_PATH)
-      ? JSON.parse(readFileSync(TOKEN_PATH, 'utf-8'))
-      : {}
-    writeFileSync(TOKEN_PATH, JSON.stringify({ ...existing, ...tokens }, null, 2))
-  }
-
-  private async runAuthFlow(): Promise<void> {
-    const authUrl = this.client.generateAuthUrl({
-      access_type: 'offline',
-      scope: SCOPES,
-      prompt: 'consent', // force refresh_token issuance
-    })
-
-    console.log('\nAuthorize Seashell Desk to access Gmail:')
-    console.log(authUrl)
-    console.log('\nWaiting for authorization...')
-
-    const code = await this.waitForAuthCode()
-    const { tokens } = await this.client.getToken(code)
-    this.client.setCredentials(tokens)
-    this.saveTokens(tokens as Record<string, unknown>)
-    console.log('Gmail authorization complete. Tokens saved to .credentials/')
-  }
-
-  private waitForAuthCode(): Promise<string> {
-    return new Promise((resolve, reject) => {
-      const server = createServer((req, res) => {
-        try {
-          const url = new URL(req.url ?? '/', `http://localhost:${REDIRECT_PORT}`)
-          const code = url.searchParams.get('code')
-          const error = url.searchParams.get('error')
-
-          if (error) {
-            res.writeHead(400).end('Authorization failed. You may close this window.')
-            server.close()
-            reject(new Error(`OAuth error: ${error}`))
-            return
-          }
-
-          if (code) {
-            res.writeHead(200).end('Authorization successful. You may close this window.')
-            server.close()
-            resolve(code)
-          }
-        } catch (err) {
-          reject(err)
-        }
-      })
-
-      server.listen(REDIRECT_PORT, () => {
-        // Server is ready — auth URL has already been printed
-      })
-
-      server.on('error', reject)
-    })
+  private ensureAuthenticated(): Promise<void> {
+    return this.auth.ensureAuthenticated()
   }
 
   async searchMessages(query: string, maxResults = 20): Promise<GmailMessage[]> {
@@ -193,7 +71,6 @@ export class GmailService {
       messageId,
       id: attachmentId,
     })
-    // Gmail uses URL-safe base64
     return Buffer.from(res.data.data ?? '', 'base64url')
   }
 
@@ -207,9 +84,6 @@ export class GmailService {
     }))
   }
 
-  /**
-   * Find a label by name, creating it if it doesn't exist.
-   */
   async ensureLabel(name: string): Promise<GmailLabel> {
     await this.ensureAuthenticated()
     const labels = await this.listLabels()

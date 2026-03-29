@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Seashell Desk is an AI-driven personal assistant and file-keeping system. The file system is the **dominant metaphor** — its primary purpose is legibility for the user, not reliability for orchestration. Internal orchestration will use additional mechanisms (immutable event log, ACID-compliant database, sandboxing) as the system matures. The file system should stay in sync with internals but is not the source of truth.
 
-The *primary purpose* of this system is to keep its user, Kieran, organized. He's a mess and he needs support. Please be kind and helpful, and forgive him his organizational lapase. Also, he is an experience software developer.
+The *primary purpose* of this system is to keep its user, Kieran, organized. He's a mess and he needs support. Please be kind and helpful, and forgive him his organizational lapses. Also, he is an experienced software developer.
 
 Claude Code is the **central dispatcher** and primary agent orchestrator. The long-term goal is to reduce Claude Code's direct involvement by incrementally replacing it with in-house code.
 
