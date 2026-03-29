@@ -19,6 +19,8 @@ import {
   existsSync,
 } from 'fs'
 import path from 'path'
+import os from 'os'
+import { execSync } from 'child_process'
 
 const DESK_ROOT = path.resolve(path.join(import.meta.dirname, '..', '..', 'desk'))
 
@@ -42,6 +44,10 @@ const IMAGE_MEDIA_TYPES: Record<string, string> = {
   '.webp': 'image/webp',
 }
 
+// HEIC files are converted to JPEG on the fly via sips (macOS built-in)
+// before being returned as an image block. The agent sees only JPEG.
+const HEIC_EXTS = new Set(['.heic', '.heif'])
+
 // Document files: delivered as an Anthropic document content block (base64).
 const DOCUMENT_MEDIA_TYPES: Record<string, string> = {
   '.pdf': 'application/pdf',
@@ -53,6 +59,7 @@ function classifyFile(filePath: string): FileKind {
   const ext = path.extname(filePath).toLowerCase()
   if (TEXT_EXTS.has(ext)) return 'text'
   if (IMAGE_MEDIA_TYPES[ext]) return 'image'
+  if (HEIC_EXTS.has(ext)) return 'image'
   if (DOCUMENT_MEDIA_TYPES[ext]) return 'document'
   return 'binary'
 }
@@ -256,7 +263,26 @@ export async function runFilesystemTool(toolName: FilesystemToolName, input: unk
         const kind = classifyFile(filePath)
 
         if (kind === 'image') {
-          const mediaType = IMAGE_MEDIA_TYPES[path.extname(filePath).toLowerCase()]
+          const ext = path.extname(filePath).toLowerCase()
+
+          // HEIC/HEIF: convert to JPEG via sips (macOS built-in) before encoding
+          if (HEIC_EXTS.has(ext)) {
+            const tmpPath = path.join(os.tmpdir(), `desk-heic-${Date.now()}.jpg`)
+            try {
+              execSync(`sips -s format jpeg ${JSON.stringify(resolved)} --out ${JSON.stringify(tmpPath)}`, { stdio: 'ignore' })
+              const data = readFileSync(tmpPath).toString('base64')
+              return {
+                _rawContent: [
+                  { type: 'text', text: `File: ${filePath} (${stat.size} bytes, HEIC converted to JPEG)` },
+                  { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data } },
+                ],
+              }
+            } finally {
+              if (existsSync(tmpPath)) unlinkSync(tmpPath)
+            }
+          }
+
+          const mediaType = IMAGE_MEDIA_TYPES[ext]
           const data = readFileSync(resolved).toString('base64')
           return {
             _rawContent: [

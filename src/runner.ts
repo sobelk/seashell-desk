@@ -57,6 +57,36 @@ export interface RunAgentOptions {
    * letting the watcher inject external file-change events mid-run.
    */
   getPendingInjection?: () => string | null
+  /**
+   * Receives each log line instead of writing to stderr. When provided,
+   * stderr output is suppressed entirely.
+   */
+  onLog?: (message: string) => void
+  /**
+   * Called with true just before blocking on the Anthropic API or tool
+   * execution, and false once the response is received. Use to drive a
+   * loading indicator in the UI.
+   */
+  onWaiting?: (waiting: boolean) => void
+  /**
+   * Called at the end of each round with a structured summary: agent text,
+   * all tool calls (name + input + output), and token usage. Used for logging.
+   */
+  onRound?: (data: RoundData) => void
+}
+
+export interface ToolCallData {
+  id: string
+  name: string
+  input: unknown
+  output: unknown
+}
+
+export interface RoundData {
+  round: number
+  text: string
+  toolCalls: ToolCallData[]
+  usage: { inputTokens: number, outputTokens: number }
 }
 
 export interface RunAgentResult {
@@ -122,13 +152,20 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
     logLevel = 'normal',
     onToolExecuted,
     getPendingInjection,
+    onLog,
+    onWaiting,
+    onRound,
   } = options
 
+  const emit = (msg: string) => {
+    if (onLog) onLog(msg)
+    else process.stderr.write(msg + '\n')
+  }
   const log = (msg: string) => {
-    if (logLevel !== 'silent') process.stderr.write(msg + '\n')
+    if (logLevel !== 'silent') emit(msg)
   }
   const logVerbose = (msg: string) => {
-    if (logLevel === 'verbose') process.stderr.write(msg + '\n')
+    if (logLevel === 'verbose') emit(msg)
   }
 
   const client = new Anthropic()
@@ -142,6 +179,7 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
   while (rounds < maxRounds) {
     logVerbose(`\n[agent] ── Round ${rounds + 1} ──────────────────────────`)
 
+    onWaiting?.(true)
     const response = await client.messages.create({
       model,
       max_tokens: 8096,
@@ -149,6 +187,7 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
       tools: tools as Anthropic.Tool[],
       messages,
     })
+    onWaiting?.(false)
 
     // Add assistant turn to message history
     messages.push({ role: 'assistant', content: response.content })
@@ -178,6 +217,8 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
       return { response: text, rounds, hitLimit: false }
     }
 
+    onWaiting?.(true)
+    const roundToolCalls: ToolCallData[] = []
     const toolResults = await Promise.all(
       toolUseBlocks.map(async (block) => {
         logVerbose(`[tool]  → ${block.name}(${formatInput(block.input)})`)
@@ -190,6 +231,7 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
         }
 
         onToolExecuted?.(block.name, block.input, output)
+        roundToolCalls.push({ id: block.id, name: block.name, input: block.input, output })
         log(`[tool]  ${block.name.padEnd(26)} ${formatOutput(output)}`)
 
         // If the tool returned a _rawContent sentinel, use it directly as the
@@ -211,6 +253,13 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
       }),
     )
 
+    onWaiting?.(false)
+    onRound?.({
+      round: rounds + 1,
+      text: textBlocks.map((b) => b.text).join('\n'),
+      toolCalls: roundToolCalls,
+      usage: { inputTokens: response.usage.input_tokens, outputTokens: response.usage.output_tokens },
+    })
     // Append any externally-injected context (file changes from the watcher)
     // as a text block alongside the tool results.
     const injection = getPendingInjection?.()

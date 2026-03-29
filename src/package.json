@@ -10,15 +10,19 @@
     "triage": "bun triage.ts",
     "triage:verbose": "bun triage.ts --verbose",
     "triage:dry-run": "bun triage.ts --dry-run",
-    "watch": "bun watch.ts"
+    "watch": "bun watch.ts",
+    "desk": "bun desk.tsx"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.80.0",
     "googleapis": "^144.0.0",
+    "ink": "^6.8.0",
+    "react": "^19.2.4",
     "zod": "^3.23.8"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
+    "@types/react": "^19.2.14",
     "typescript": "^5.5.0"
   }
 }
