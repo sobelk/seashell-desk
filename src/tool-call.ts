@@ -18,8 +18,9 @@ import { GoogleAuth } from './services/google-auth.js'
 import { runGmailTool, gmailTools, type GmailToolName } from './tools/gmail.js'
 import { runCalendarTool, calendarTools, type CalendarToolName } from './tools/calendar.js'
 import { runTaskTool, taskTools, type TaskToolName } from './tools/tasks.js'
+import { runFilesystemTool, filesystemTools, type FilesystemToolName } from './tools/filesystem.js'
 
-const allTools = [...gmailTools, ...calendarTools, ...taskTools]
+const allTools = [...filesystemTools, ...taskTools, ...gmailTools, ...calendarTools]
 
 function printHelp(toolName?: string) {
   if (toolName) {
@@ -38,6 +39,7 @@ function printHelp(toolName?: string) {
   console.log('\nUsage: bun run tool-call <tool_name> [json_input]')
   console.log('\nAvailable tools:\n')
   const groups = [
+    { label: 'Filesystem', tools: filesystemTools },
     { label: 'Tasks', tools: taskTools },
     { label: 'Gmail', tools: gmailTools },
     { label: 'Google Calendar', tools: calendarTools },
@@ -82,10 +84,13 @@ if (rawInput) {
 const gmailToolNames = gmailTools.map((t) => t.name)
 const calendarToolNames = calendarTools.map((t) => t.name)
 const taskToolNames = taskTools.map((t) => t.name)
+const filesystemToolNames = filesystemTools.map((t) => t.name)
 
 let result: unknown
 
-if (gmailToolNames.includes(toolName as GmailToolName)) {
+if (filesystemToolNames.includes(toolName as FilesystemToolName)) {
+  result = await runFilesystemTool(toolName as FilesystemToolName, input)
+} else if (gmailToolNames.includes(toolName as GmailToolName)) {
   const auth = GoogleAuth.fromEnv()
   const service = new GmailService(auth)
   result = await runGmailTool(service, toolName as GmailToolName, input)

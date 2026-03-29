@@ -59,7 +59,7 @@ export const gmailTools = [
   {
     name: 'gmail_get_attachment',
     description:
-      'Download a message attachment as a base64-encoded string. Use the attachment ID from a gmail_read result.',
+      'Download a message attachment. If output_path is provided (relative to desk/), saves the binary file directly to disk — use this for PDFs and other binary files. Without output_path, returns the raw bytes as base64.',
     input_schema: {
       type: 'object' as const,
       properties: {
@@ -73,7 +73,11 @@ export const gmailTools = [
         },
         filename: {
           type: 'string',
-          description: 'Original filename (for context only, not used in the API call)',
+          description: 'Original filename (for context only)',
+        },
+        output_path: {
+          type: 'string',
+          description: 'If provided, save the attachment to this path relative to desk/ (e.g. "files/pdfs/bill.pdf"). The file is written as binary — use this for PDFs and images. Parent directories are created automatically.',
         },
       },
       required: ['message_id', 'attachment_id'],
@@ -164,10 +168,13 @@ const ReadInput = z.object({
   message_id: z.string(),
 })
 
+const DESK_ROOT = path.join(import.meta.dirname, '..', '..', 'desk')
+
 const GetAttachmentInput = z.object({
   message_id: z.string(),
   attachment_id: z.string(),
   filename: z.string().optional(),
+  output_path: z.string().optional(),
 })
 
 const ArchiveInput = z.object({
@@ -214,9 +221,20 @@ export async function runGmailTool(
       }
 
       case 'gmail_get_attachment': {
-        const { message_id, attachment_id } = GetAttachmentInput.parse(input)
+        const { message_id, attachment_id, output_path } = GetAttachmentInput.parse(input)
         const buffer = await service.getAttachment(message_id, attachment_id)
-        return { data: buffer.toString('base64'), encoding: 'base64' }
+
+        if (output_path) {
+          const resolved = path.resolve(DESK_ROOT, output_path)
+          if (!resolved.startsWith(DESK_ROOT + path.sep)) {
+            return { error: `output_path escapes desk/ directory: ${output_path}` }
+          }
+          mkdirSync(path.dirname(resolved), { recursive: true })
+          writeFileSync(resolved, buffer)
+          return { saved: output_path, bytes: buffer.length }
+        }
+
+        return { data: buffer.toString('base64'), encoding: 'base64', bytes: buffer.length }
       }
 
       case 'gmail_list_labels': {

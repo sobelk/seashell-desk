@@ -10,7 +10,7 @@
  */
 
 import { z } from 'zod'
-import { writeFileSync, mkdirSync } from 'fs'
+import { writeFileSync, readFileSync, mkdirSync, existsSync } from 'fs'
 import path from 'path'
 
 const DESK_ROOT = path.join(import.meta.dirname, '..', '..', 'desk')
@@ -21,6 +21,29 @@ const TASKS_DIR = path.join(DESK_ROOT, 'tasks')
 // ---------------------------------------------------------------------------
 
 export const taskTools = [
+  {
+    name: 'complete_task',
+    description:
+      'Mark a task as done. Updates the status field in both the project-level and top-level task files. Use when Kieran has completed a task or when triage determines a task is no longer relevant.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        id: {
+          type: 'string',
+          description: 'Task ID (the filename without .md extension, e.g. "pay-att-balance-2026-03-28").',
+        },
+        project: {
+          type: 'string',
+          description: 'Project the task belongs to. Used to locate the project-level file.',
+        },
+        resolution: {
+          type: 'string',
+          description: 'Optional one-line note on how the task was completed or why it was closed.',
+        },
+      },
+      required: ['id', 'project'],
+    },
+  },
   {
     name: 'create_task',
     description:
@@ -59,8 +82,14 @@ export const taskTools = [
 export type TaskToolName = (typeof taskTools)[number]['name']
 
 // ---------------------------------------------------------------------------
-// Input schema
+// Input schemas
 // ---------------------------------------------------------------------------
+
+const CompleteTaskInput = z.object({
+  id: z.string().min(1),
+  project: z.string().min(1),
+  resolution: z.string().optional(),
+})
 
 const CreateTaskInput = z.object({
   title: z.string().min(1),
@@ -73,6 +102,21 @@ const CreateTaskInput = z.object({
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+function completeTaskFile(filePath: string, resolution?: string): void {
+  const content = readFileSync(filePath, 'utf8')
+  const completed = new Date().toISOString().slice(0, 10)
+
+  // Replace status line and append completed date inside frontmatter
+  let updated = content.replace(/^status: open$/m, `status: done\ncompleted: ${completed}`)
+
+  // Append resolution as a body section if provided
+  if (resolution) {
+    updated = updated.trimEnd() + `\n\nResolution: ${resolution}\n`
+  }
+
+  writeFileSync(filePath, updated)
+}
 
 function slugify(str: string): string {
   return str
@@ -113,6 +157,30 @@ function renderTask(fields: {
 export async function runTaskTool(toolName: TaskToolName, input: unknown): Promise<unknown> {
   try {
     switch (toolName) {
+      case 'complete_task': {
+        const { id, project, resolution } = CompleteTaskInput.parse(input)
+        const filename = `${id}.md`
+
+        const projectPath = path.join(DESK_ROOT, 'projects', project, 'tasks', filename)
+        const topPath = path.join(TASKS_DIR, filename)
+        const updated: string[] = []
+
+        if (existsSync(projectPath)) {
+          completeTaskFile(projectPath, resolution)
+          updated.push(`desk/projects/${project}/tasks/${filename}`)
+        }
+        if (existsSync(topPath)) {
+          completeTaskFile(topPath, resolution)
+          updated.push(`desk/tasks/${filename}`)
+        }
+
+        if (updated.length === 0) {
+          return { error: `Task not found: ${id} (project: ${project})` }
+        }
+
+        return { id, status: 'done', updated }
+      }
+
       case 'create_task': {
         const { title, project, urgency, due, notes } = CreateTaskInput.parse(input)
 
