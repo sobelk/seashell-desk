@@ -1,5 +1,6 @@
 desk/**
+logs/
 .credentials/
 node_modules/
-src/.env
+src/.env*
 .DS_Store

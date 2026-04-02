@@ -8,11 +8,13 @@
  *   'agent:log'    (agentPath: string, message: string)
  *   'agent:done'   (agentPath: string, rounds: number, hitLimit: boolean, response: string)
  *   'agent:error'  (agentPath: string, error: string)
+ *   'user:message' (agentPath: string, message: string)
  */
 
 import { EventEmitter } from 'events'
-import { watch, existsSync, readdirSync } from 'fs'
+import { watch, existsSync, readdirSync, readFileSync, statSync } from 'fs'
 import path from 'path'
+import Anthropic from '@anthropic-ai/sdk'
 import { GoogleAuth } from './services/google-auth.js'
 import { GmailService } from './services/gmail.js'
 import { CalendarService } from './services/calendar.js'
@@ -40,7 +42,15 @@ export interface DeskWatcherOptions {
 
 interface QueueEntry {
   changes: FileChange[]
+  directMessage?: string
   debounceTimer: ReturnType<typeof setTimeout> | null
+}
+
+// Normalize Unicode space variants to ASCII space so LLMs can reproduce filenames
+// faithfully in tool calls. macOS uses U+202F (NARROW NO-BREAK SPACE) before AM/PM
+// in screenshot names; U+00A0 (NO-BREAK SPACE) also appears in some app exports.
+function normalizeFilename(p: string): string {
+  return p.replace(/[\u00a0\u202f\u2009\u2007\u2008]/g, ' ')
 }
 
 const ALWAYS_IGNORE = new Set(['TRIAGE_LOG.md', '.DS_Store'])
@@ -57,6 +67,99 @@ function describeChanges(changes: FileChange[]): string {
   return changes.map((c) => `  ${c.event}: ${c.path}`).join('\n')
 }
 
+// ---------------------------------------------------------------------------
+// File inlining — include content of added files in the trigger message
+// ---------------------------------------------------------------------------
+
+const TEXT_EXTS = new Set([
+  '.txt', '.md', '.csv', '.json', '.yaml', '.yml',
+  '.toml', '.xml', '.html', '.htm', '.log', '.conf', '.ini', '.env',
+  '.js', '.ts', '.jsx', '.tsx', '.py', '.rb', '.sh',
+])
+const IMAGE_EXTS = new Set(['.jpg', '.jpeg', '.png', '.gif', '.webp', '.heic', '.heif'])
+const DOCUMENT_EXTS = new Set(['.pdf'])
+
+// Maximum characters of text to inline; beyond this we show a truncation note.
+const MAX_INLINE_CHARS = 8000
+
+/**
+ * For a single added file, return a human-readable inline block describing its
+ * content (for text) or its metadata (for binary/image/document types).
+ */
+function inlineFile(relPath: string): string {
+  const absPath = path.join(DESK_ROOT, relPath)
+  if (!existsSync(absPath)) return `  (file no longer present)`
+
+  let size = 0
+  try { size = statSync(absPath).size } catch { /* ignore */ }
+
+  const ext = path.extname(relPath).toLowerCase()
+
+  if (TEXT_EXTS.has(ext)) {
+    try {
+      const content = readFileSync(absPath, 'utf8')
+      if (content.length <= MAX_INLINE_CHARS) {
+        return `\`\`\`\n${content}\n\`\`\``
+      }
+      return `\`\`\`\n${content.slice(0, MAX_INLINE_CHARS)}\n\`\`\`\n(truncated — ${content.length - MAX_INLINE_CHARS} more characters; use read_file to see the rest)`
+    } catch {
+      return `  (could not read file: ${relPath})`
+    }
+  }
+
+  if (IMAGE_EXTS.has(ext)) {
+    return `  [image file — ${(size / 1024).toFixed(0)} KB; use read_file to inspect]`
+  }
+
+  if (DOCUMENT_EXTS.has(ext)) {
+    return `  [document file — ${(size / 1024).toFixed(0)} KB; use read_file to inspect]`
+  }
+
+  return `  [binary file — ${(size / 1024).toFixed(0)} KB; extension: ${ext || 'none'}]`
+}
+
+/**
+ * Build the trigger message for a file-change-triggered agent run.
+ * Added files in the agent's input/ directory have their content inlined.
+ */
+function buildTriggerMessage(agentMdPath: string, changes: FileChange[]): string {
+  const agentDir = path.dirname(agentMdPath)
+  const inputDir = path.join(agentDir, 'input')
+  const isInputDir = existsSync(path.join(DESK_ROOT, 'input', 'AGENT.md')) &&
+    agentMdPath === path.join(DESK_ROOT, 'input', 'AGENT.md')
+
+  const lines: string[] = [
+    'The following file changes occurred in your directory:',
+    '',
+    describeChanges(changes),
+  ]
+
+  // Inline content for added files that live in:
+  //   - the agent's own input/ subdirectory
+  //   - the top-level input/ directory (for the triage agent)
+  const added = changes.filter((c) => c.event === 'added')
+  const toInline = added.filter((c) => {
+    const absPath = path.join(DESK_ROOT, c.path)
+    const parentDir = path.dirname(absPath)
+    if (isInputDir) {
+      // Triage agent: inline everything added to desk/input/
+      return path.dirname(absPath) === path.join(DESK_ROOT, 'input')
+    }
+    // Project agent: inline files added to its input/ subdirectory
+    return parentDir === inputDir
+  })
+
+  if (toInline.length > 0) {
+    lines.push('', '---', '', 'File contents:')
+    for (const change of toInline) {
+      lines.push('', `**${change.path}**`, '', inlineFile(change.path))
+    }
+  }
+
+  lines.push('', 'Review these changes and take any necessary actions according to your instructions.')
+  return lines.join('\n')
+}
+
 export class DeskWatcher extends EventEmitter {
   private readonly debounceMs: number
   private readonly logLevel: 'silent' | 'normal' | 'verbose'
@@ -67,6 +170,7 @@ export class DeskWatcher extends EventEmitter {
   private readonly originatedPaths = new Set<string>()
   private readonly runOrder: string[] = []
   private readonly entries = new Map<string, QueueEntry>()
+  private readonly sessionConversations = new Map<string, Anthropic.MessageParam[]>()
 
   private googleAuth: GoogleAuth | null = null
   private gmailService: GmailService | null = null
@@ -109,7 +213,7 @@ export class DeskWatcher extends EventEmitter {
     this.watcher = watch(DESK_ROOT, { recursive: true, persistent: true }, (eventType, filename) => {
       if (!filename) return
       const absPath = path.join(DESK_ROOT, filename)
-      const relPath = filename.replace(/\\/g, '/')
+      const relPath = normalizeFilename(filename.replace(/\\/g, '/'))
       if (isIgnored(relPath)) return
 
       // Suppress self-loops; allow cross-agent handoffs
@@ -138,6 +242,57 @@ export class DeskWatcher extends EventEmitter {
   }
 
   get deskRoot(): string { return DESK_ROOT }
+
+  /** Scans DESK_ROOT recursively for directories containing an AGENT.md.
+   *  Returns paths relative to DESK_ROOT (e.g. ['input', 'projects/finance']), sorted.
+   */
+  getAgentPaths(): string[] {
+    const results: string[] = []
+    const scan = (dir: string, relDir: string) => {
+      try {
+        const entries = readdirSync(dir, { withFileTypes: true })
+        const hasAgent = entries.some((e) => e.isFile() && e.name === 'AGENT.md')
+        if (hasAgent && relDir !== '') results.push(relDir)
+        for (const entry of entries) {
+          if (entry.isDirectory()) {
+            const childRel = relDir ? `${relDir}/${entry.name}` : entry.name
+            scan(path.join(dir, entry.name), childRel)
+          }
+        }
+      } catch { /* ignore unreadable dirs */ }
+    }
+    scan(DESK_ROOT, '')
+    return results.sort()
+  }
+
+  /** Send a direct user message to the agent at agentRelPath (relative to DESK_ROOT). */
+  sendMessage(agentRelPath: string, userMessage: string): void {
+    const normalized = agentRelPath.replace(/^\/+|\/+$/g, '')
+    const agentMdPath = path.join(DESK_ROOT, normalized, 'AGENT.md')
+
+    if (!existsSync(agentMdPath)) {
+      this.emit('agent:error', agentMdPath, `No AGENT.md found at: ${agentMdPath}`)
+      return
+    }
+
+    this.emit('user:message', agentMdPath, userMessage)
+
+    if (this.runningAgent === agentMdPath) {
+      const existing = this.entries.get(agentMdPath)
+      if (existing) {
+        existing.directMessage = userMessage
+      } else {
+        this.entries.set(agentMdPath, { changes: [], directMessage: userMessage, debounceTimer: null })
+        this.runOrder.push(agentMdPath)
+      }
+      return
+    }
+
+    this.entries.set(agentMdPath, { changes: [], directMessage: userMessage, debounceTimer: null })
+    this.runOrder.push(agentMdPath)
+    this.emitQueue()
+    this.runNext()
+  }
 
   // ---------------------------------------------------------------------------
   // Queue
@@ -202,7 +357,7 @@ export class DeskWatcher extends EventEmitter {
 
     this.emit('agent:start', agentMdPath, entry.changes)
 
-    this.runAgentFor(agentMdPath, entry.changes)
+    this.runAgentFor(agentMdPath, entry)
       .catch((err: unknown) => {
         const msg = err instanceof Error ? err.message : String(err)
         this.emit('agent:error', agentMdPath, msg)
@@ -280,21 +435,18 @@ export class DeskWatcher extends EventEmitter {
   // Agent runner
   // ---------------------------------------------------------------------------
 
-  private async runAgentFor(agentMdPath: string, changes: FileChange[]) {
+  private async runAgentFor(agentMdPath: string, entry: QueueEntry) {
     if (this.noRun) return
 
+    const { changes, directMessage } = entry
     const agentName = path.relative(DESK_ROOT, path.dirname(agentMdPath)).replace(/\//g, '-') || 'root'
     const logger = new RunLogger(agentName)
     logger.logStart(agentMdPath, changes)
 
     const systemPrompt = buildSystemPrompt(agentMdPath)
-    const message = [
-      'The following file changes occurred in your directory:',
-      '',
-      describeChanges(changes),
-      '',
-      'Review these changes and take any necessary actions according to your instructions.',
-    ].join('\n')
+    const message = directMessage
+      ? directMessage
+      : buildTriggerMessage(agentMdPath, changes)
 
     const getPendingInjection = (): string | null => {
       if (this.runningInjection.length === 0) return null
@@ -306,11 +458,14 @@ export class DeskWatcher extends EventEmitter {
       ].join('\n')
     }
 
+    const priorMessages = this.sessionConversations.get(agentMdPath)
+
     const result = await runAgent({
       systemPrompt,
       tools: this.allTools,
       toolExecutor: (name, input) => this.toolExecutor(name, input),
       message,
+      priorMessages,
       logLevel: this.logLevel,
       onLog: (msg) => this.emit('agent:log', agentMdPath, msg),
       onWaiting: (waiting) => this.emit('agent:waiting', agentMdPath, waiting),
@@ -321,6 +476,7 @@ export class DeskWatcher extends EventEmitter {
       maxRounds: 80,
     })
 
+    this.sessionConversations.set(agentMdPath, result.messages)
     logger.logDone(result.rounds, result.hitLimit, result.response)
     this.emit('agent:done', agentMdPath, result.rounds, result.hitLimit, result.response)
   }

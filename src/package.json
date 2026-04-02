@@ -11,7 +11,8 @@
     "triage:verbose": "bun triage.ts --verbose",
     "triage:dry-run": "bun triage.ts --dry-run",
     "watch": "bun watch.ts",
-    "desk": "bun desk.tsx"
+    "desk": "bun desk.tsx",
+    "send": "bun send.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.80.0",

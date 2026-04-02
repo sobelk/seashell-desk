@@ -23,39 +23,45 @@ function useSpinner(active: boolean): string {
 }
 
 // Classify a log line for display styling
-type LineKind = 'agent' | 'tool' | 'error' | 'other'
+type LineKind = 'agent' | 'tool' | 'error' | 'user' | 'other'
 
 function classifyLine(line: string): LineKind {
   if (line.startsWith('[tool]')) return 'tool'
   if (line.startsWith('[agent]')) return 'agent'
   if (line.startsWith('[error]')) return 'error'
+  if (line.startsWith('[user]')) return 'user'
   return 'other'
 }
 
 function LogLine({ line }: { line: string }) {
   const kind = classifyLine(line)
 
+  // Each LogLine is wrapped in a Box so it always occupies its own row in the
+  // column layout — bare <Text> nodes can render inline in some Ink versions.
   if (kind === 'tool') {
-    // Strip the [tool] prefix and render muted
     const body = line.slice('[tool]'.length)
     return (
-      <Text color="gray" dimColor wrap="truncate">
-        {'  '}{body.trimStart()}
-      </Text>
+      <Box>
+        <Text color="gray" dimColor wrap="truncate">{'  '}{body.trimStart()}</Text>
+      </Box>
     )
   }
 
   if (kind === 'agent') {
-    // Strip the [agent] prefix — this is the agent's narration
     const body = line.slice('[agent]'.length).trimStart()
-    return <Text wrap="truncate">{body}</Text>
+    return <Box><Text wrap="truncate">{body}</Text></Box>
   }
 
   if (kind === 'error') {
-    return <Text color="red" wrap="truncate">{line}</Text>
+    return <Box><Text color="red" wrap="truncate">{line}</Text></Box>
   }
 
-  return <Text color="gray" wrap="truncate">{line}</Text>
+  if (kind === 'user') {
+    const body = line.slice('[user]'.length).trimStart()
+    return <Box><Text color="cyan" wrap="truncate">{'you: '}{body}</Text></Box>
+  }
+
+  return <Box><Text color="gray" wrap="truncate">{line}</Text></Box>
 }
 
 export function AgentRow({ title, logs, width, height, active, waiting }: Props) {

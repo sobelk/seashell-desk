@@ -35,6 +35,8 @@ export interface RunAgentOptions {
   toolExecutor: (toolName: string, input: unknown) => Promise<unknown>
   /** Initial user message to the agent */
   message: string
+  /** Prior conversation to continue; the new message is appended as the next user turn */
+  priorMessages?: Anthropic.MessageParam[]
   /** Maximum tool-use rounds before aborting (default 50) */
   maxRounds?: number
   /** Model to use (default claude-sonnet-4-6) */
@@ -92,7 +94,12 @@ export interface RoundData {
   round: number
   text: string
   toolCalls: ToolCallData[]
-  usage: { inputTokens: number, outputTokens: number }
+  usage: {
+    inputTokens: number
+    outputTokens: number
+    cacheCreationInputTokens: number
+    cacheReadInputTokens: number
+  }
 }
 
 export interface RunAgentResult {
@@ -102,6 +109,8 @@ export interface RunAgentResult {
   rounds: number
   /** Whether the agent hit the round limit without finishing */
   hitLimit: boolean
+  /** Full conversation history after this run — pass as priorMessages to continue */
+  messages: Anthropic.MessageParam[]
 }
 
 // ---------------------------------------------------------------------------
@@ -153,6 +162,7 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
     tools,
     toolExecutor,
     message,
+    priorMessages,
     maxRounds = DEFAULT_MAX_ROUNDS,
     model = DEFAULT_MODEL,
     logLevel = 'normal',
@@ -177,7 +187,30 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
 
   const client = new Anthropic()
 
+  // Stable across all rounds — cache at the boundary after the last tool.
+  const systemBlocks: Anthropic.TextBlockParam[] = [
+    { type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } },
+  ]
+  const toolsWithCache: Anthropic.Tool[] = (tools as Anthropic.Tool[]).map((t, i) =>
+    i === tools.length - 1 ? { ...t, cache_control: { type: 'ephemeral' } } : t,
+  )
+
+  // Before each API call, mark the last user message with a cache breakpoint so
+  // the growing conversation history is cached up to that point.
+  function withCacheControl(msgs: Anthropic.MessageParam[]): Anthropic.MessageParam[] {
+    if (msgs.length === 0) return msgs
+    const last = msgs.at(-1)!
+    if (last.role !== 'user') return msgs
+    const content: Anthropic.MessageParam['content'] = typeof last.content === 'string'
+      ? [{ type: 'text' as const, text: last.content, cache_control: { type: 'ephemeral' as const } }]
+      : (last.content as Anthropic.ContentBlockParam[]).map((b, i, arr) =>
+          i === arr.length - 1 ? { ...b, cache_control: { type: 'ephemeral' as const } } : b,
+        )
+    return [...msgs.slice(0, -1), { role: 'user' as const, content }]
+  }
+
   const messages: Anthropic.MessageParam[] = [
+    ...(priorMessages ?? []),
     { role: 'user', content: message },
   ]
 
@@ -190,9 +223,9 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
     const response = await client.messages.create({
       model,
       max_tokens: 8096,
-      system: systemPrompt,
-      tools: tools as Anthropic.Tool[],
-      messages,
+      system: systemBlocks,
+      tools: toolsWithCache,
+      messages: withCacheControl(messages),
     })
     onWaiting?.(false)
 
@@ -211,7 +244,7 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
     // If the model stopped without using tools, we're done
     if (response.stop_reason === 'end_turn') {
       const text = textBlocks.map((b) => b.text).join('\n')
-      return { response: text, rounds, hitLimit: false }
+      return { response: text, rounds, hitLimit: false, messages }
     }
 
     // Collect and execute all tool_use blocks in parallel
@@ -221,7 +254,7 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
 
     if (toolUseBlocks.length === 0) {
       const text = textBlocks.map((b) => b.text).join('\n')
-      return { response: text, rounds, hitLimit: false }
+      return { response: text, rounds, hitLimit: false, messages }
     }
 
     onWaiting?.(true)
@@ -266,7 +299,12 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
       round: rounds + 1,
       text: textBlocks.map((b) => b.text).join('\n'),
       toolCalls: roundToolCalls,
-      usage: { inputTokens: response.usage.input_tokens, outputTokens: response.usage.output_tokens },
+      usage: {
+        inputTokens: response.usage.input_tokens,
+        outputTokens: response.usage.output_tokens,
+        cacheCreationInputTokens: response.usage.cache_creation_input_tokens ?? 0,
+        cacheReadInputTokens: response.usage.cache_read_input_tokens ?? 0,
+      },
     })
     // Append any externally-injected context (file changes from the watcher)
     // as a text block alongside the tool results.
@@ -289,5 +327,5 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
         .join('\n')
     : ''
 
-  return { response: text, rounds, hitLimit: true }
+  return { response: text, rounds, hitLimit: true, messages }
 }

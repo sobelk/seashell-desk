@@ -1,11 +1,12 @@
 import React, { useEffect, useState, useCallback } from 'react'
-import { Box, Text, useApp, useStdout } from 'ink'
+import { Box, Text, useApp, useStdout, useInput } from 'ink'
 import path from 'path'
 import { readdirSync, existsSync } from 'fs'
 import { DeskWatcher, type FileChange } from '../watcher-core.js'
 import { QueuePanel } from './QueuePanel.js'
 import { TaskPanel } from './TaskPanel.js'
 import { AgentRow } from './AgentRow.js'
+import { InputBar } from './InputBar.js'
 
 interface AgentState {
   path: string
@@ -30,7 +31,9 @@ function isTriage(agentMdPath: string, deskRoot: string): boolean {
 }
 
 function appendLog(logs: string[], line: string): string[] {
-  const next = [...logs, line]
+  // Normalize: split on newlines so no entry ever contains \n
+  const incoming = line.split('\n').filter((l) => l.length > 0)
+  const next = [...logs, ...incoming]
   return next.length > MAX_LOG_LINES ? next.slice(-MAX_LOG_LINES) : next
 }
 
@@ -65,6 +68,10 @@ export function DeskApp({ watcher }: Props) {
   const [project, setProject] = useState<AgentState | null>(null)
 
   // Queue state
+  const [inputFocused, setInputFocused] = useState(false)
+  const [agentPaths, setAgentPaths] = useState<string[]>(() => watcher.getAgentPaths())
+
+  // Queue state
   const [queueRunning, setQueueRunning] = useState<string | null>(null)
   const [queueWaiting, setQueueWaiting] = useState<string[]>([])
   const [queueChanges, setQueueChanges] = useState<Record<string, FileChange[]>>({})
@@ -87,6 +94,12 @@ export function DeskApp({ watcher }: Props) {
     const timer = setInterval(refresh, 2000)
     return () => clearInterval(timer)
   }, [watcher.deskRoot])
+
+  // Refresh agent paths periodically (they rarely change but can)
+  useEffect(() => {
+    const t = setInterval(() => setAgentPaths(watcher.getAgentPaths()), 5000)
+    return () => clearInterval(t)
+  }, [watcher])
 
   const onAgentStart = useCallback((agentPath: string) => {
     if (isTriage(agentPath, watcher.deskRoot)) {
@@ -172,6 +185,21 @@ export function DeskApp({ watcher }: Props) {
     })
   }, [])
 
+  const onUserMessage = useCallback((agentPath: string, message: string) => {
+    const line = `[user] ${message}`
+    if (isTriage(agentPath, watcher.deskRoot)) {
+      setTriage(prev => ({ ...prev, logs: appendLog(prev.logs, line) }))
+    } else {
+      const name = agentDisplayName(agentPath, watcher.deskRoot)
+      setProject(prev => {
+        if (!prev || prev.path !== agentPath) {
+          return { path: agentPath, name, logs: [line], active: false, waiting: false }
+        }
+        return { ...prev, logs: appendLog(prev.logs, line) }
+      })
+    }
+  }, [watcher.deskRoot])
+
   useEffect(() => {
     watcher.on('agent:start', onAgentStart)
     watcher.on('agent:log', onAgentLog)
@@ -180,6 +208,7 @@ export function DeskApp({ watcher }: Props) {
     watcher.on('agent:error', onAgentError)
     watcher.on('queue', onQueue)
     watcher.on('fs', onFs)
+    watcher.on('user:message', onUserMessage)
     return () => {
       watcher.off('agent:start', onAgentStart)
       watcher.off('agent:log', onAgentLog)
@@ -188,24 +217,30 @@ export function DeskApp({ watcher }: Props) {
       watcher.off('agent:error', onAgentError)
       watcher.off('queue', onQueue)
       watcher.off('fs', onFs)
+      watcher.off('user:message', onUserMessage)
     }
-  }, [watcher, onAgentStart, onAgentLog, onAgentWaiting, onAgentDone, onAgentError, onQueue, onFs])
+  }, [watcher, onAgentStart, onAgentLog, onAgentWaiting, onAgentDone, onAgentError, onQueue, onFs, onUserMessage])
 
-  useEffect(() => {
-    const onKey = (data: Buffer) => {
-      if (data.toString() === 'q' || data.toString() === '\x03') {
-        watcher.stop()
-        exit()
-      }
+  useInput((input, key) => {
+    if (key.escape || input === 'q' || input === '\x03') {
+      watcher.stop()
+      exit()
     }
-    process.stdin.on('data', onKey)
-    return () => { process.stdin.off('data', onKey) }
-  }, [watcher, exit])
+    if (input === '/') {
+      setInputFocused(true)
+    }
+  }, { isActive: !inputFocused })
+
+  const onSend = useCallback((agentRelPath: string, message: string) => {
+    setInputFocused(false)
+    watcher.sendMessage(agentRelPath, message)
+  }, [watcher])
 
   // Layout heights
   const headerHeight = 1
+  const inputBarHeight = 3
   const topHeight = Math.max(8, Math.min(14, Math.floor(termHeight * 0.28)))
-  const remaining = termHeight - headerHeight - topHeight
+  const remaining = termHeight - headerHeight - topHeight - inputBarHeight
   const triageHeight = Math.floor(remaining / 2)
   const agentHeight = remaining - triageHeight
 
@@ -217,7 +252,7 @@ export function DeskApp({ watcher }: Props) {
       {/* Header */}
       <Box>
         <Text bold color="cyan">🐚 Seashell Desk</Text>
-        <Text color="gray">  {watcher.deskRoot}  —  q to quit</Text>
+        <Text color="gray">  {watcher.deskRoot}  —  press / to message  ·  q to quit</Text>
       </Box>
 
       {/* Top row: queue (fixed half) + tasks (fills rest) */}
@@ -255,6 +290,14 @@ export function DeskApp({ watcher }: Props) {
         height={agentHeight}
         active={project?.active ?? false}
         waiting={project?.waiting ?? false}
+      />
+
+      {/* Input bar */}
+      <InputBar
+        width={termWidth}
+        agentPaths={agentPaths}
+        isActive={inputFocused}
+        onSend={onSend}
       />
     </Box>
   )

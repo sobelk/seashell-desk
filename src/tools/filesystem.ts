@@ -68,10 +68,27 @@ function classifyFile(filePath: string): FileKind {
 // Path safety
 // ---------------------------------------------------------------------------
 
+// macOS uses U+202F (NARROW NO-BREAK SPACE) before AM/PM in screenshot filenames.
+// LLMs normalize these to ASCII space when constructing tool calls, causing ENOENT.
+// Apply the same normalization consistently so names round-trip correctly.
+function normalizeSpaces(s: string): string {
+  return s.replace(/[\u00a0\u202f\u2009\u2007\u2008]/g, ' ')
+}
+
 function resolveDeskPath(p: string): string {
   const resolved = path.isAbsolute(p) ? path.resolve(p) : path.resolve(DESK_ROOT, p)
   if (!resolved.startsWith(DESK_ROOT + path.sep) && resolved !== DESK_ROOT) {
     throw new Error(`Path escapes desk/ directory: ${p}`)
+  }
+  // If the path doesn't exist, check whether the file exists under a Unicode
+  // space variant of the same name (deterministic normalization, not fuzzy).
+  if (!existsSync(resolved)) {
+    const dir = path.dirname(resolved)
+    const base = normalizeSpaces(path.basename(resolved))
+    try {
+      const match = readdirSync(dir).find((name) => normalizeSpaces(name) === base)
+      if (match) return path.join(dir, match)
+    } catch { /* ignore */ }
   }
   return resolved
 }
@@ -245,7 +262,7 @@ export async function runFilesystemTool(toolName: FilesystemToolName, input: unk
             } catch { /* ignore */ }
             const kind: FileKind | undefined = e.isFile() ? classifyFile(e.name) : undefined
             return {
-              name: e.name,
+              name: normalizeSpaces(e.name),
               type: e.isDirectory() ? 'directory' : 'file',
               ...(size !== undefined ? { size } : {}),
               ...(kind !== undefined ? { kind } : {}),
