@@ -22,136 +22,139 @@ const DEFAULT_DESK_INPUT_DIR = path.join(import.meta.dirname, '..', '..', 'desk'
 
 export const gmailTools = [
   {
-    name: 'gmail_search',
+    name: "gmail_search",
     description:
-      'Search Gmail messages using Gmail search syntax. Returns matching messages including headers, plain-text body, and attachment metadata. The body field contains the full plain-text content. Use gmail_get_attachment to download attachments or gmail_read to re-fetch a single message.',
+      "Search Gmail messages using Gmail search syntax. Returns matching messages including headers, plain-text body, and attachment metadata. The body field contains the full plain-text content. Use gmail_get_attachment to download attachments or gmail_read to re-fetch a single message.",
     input_schema: {
-      type: 'object' as const,
+      type: "object" as const,
       properties: {
         query: {
-          type: 'string',
+          type: "string",
           description:
             'Gmail search query (e.g. "is:unread in:inbox", "from:@delta.com", "subject:payment after:2026/01/01")',
         },
         max_results: {
-          type: 'number',
-          description: 'Maximum messages to return. Default 20, max 50.',
+          type: "number",
+          description: "Maximum messages to return. Default 20, max 50.",
         },
       },
-      required: ['query'],
+      required: ["query"],
     },
   },
   {
-    name: 'gmail_read',
+    name: "gmail_read",
     description:
-      'Fetch a single Gmail message by ID. Useful for re-fetching a specific message without searching. Returns headers, plain-text body, and attachment metadata.',
+      "Fetch a single Gmail message by ID. Useful for re-fetching a specific message without searching. Returns headers, plain-text body, and attachment metadata.",
     input_schema: {
-      type: 'object' as const,
+      type: "object" as const,
       properties: {
         message_id: {
-          type: 'string',
-          description: 'Gmail message ID',
+          type: "string",
+          description: "Gmail message ID",
         },
       },
-      required: ['message_id'],
+      required: ["message_id"],
     },
   },
   {
-    name: 'gmail_get_attachment',
+    name: "gmail_get_attachment",
     description:
-      'Download a message attachment. If output_path is provided (relative to desk/), saves the binary file directly to disk — use this for PDFs and other binary files. Without output_path, returns the raw bytes as base64.',
+      "Download a message attachment. If output_path is provided (relative to desk/), saves the binary file directly to disk — use this for PDFs and other binary files. Without output_path, returns the raw bytes as base64.",
     input_schema: {
-      type: 'object' as const,
+      type: "object" as const,
       properties: {
         message_id: {
-          type: 'string',
-          description: 'Gmail message ID that contains the attachment',
+          type: "string",
+          description: "Gmail message ID that contains the attachment",
         },
         attachment_id: {
-          type: 'string',
-          description: 'Attachment ID from the message',
+          type: "string",
+          description: "Attachment ID from the message",
         },
         filename: {
-          type: 'string',
-          description: 'Original filename (for context only)',
+          type: "string",
+          description: "Original filename (for context only)",
         },
         output_path: {
-          type: 'string',
-          description: 'If provided, save the attachment to this path relative to desk/ (e.g. "files/pdfs/bill.pdf"). The file is written as binary — use this for PDFs and images. Parent directories are created automatically.',
+          type: "string",
+          description:
+            'If provided, save the attachment to this path relative to desk/ (e.g. "files/pdfs/bill.pdf"). The file is written as binary — use this for PDFs and images. Parent directories are created automatically.',
         },
       },
-      required: ['message_id', 'attachment_id'],
+      required: ["message_id", "attachment_id"],
     },
   },
   {
-    name: 'gmail_list_labels',
-    description: 'List all Gmail labels for this account, including system labels (INBOX, SENT, etc.) and user-created labels. Useful for finding label IDs before calling gmail_modify_labels.',
+    name: "gmail_list_labels",
+    description:
+      "List all Gmail labels for this account, including system labels (INBOX, SENT, etc.) and user-created labels. Useful for finding label IDs before calling gmail_modify_labels.",
     input_schema: {
-      type: 'object' as const,
+      type: "object" as const,
       properties: {},
       required: [],
     },
   },
+  // {
+  //   name: 'gmail_archive',
+  //   description:
+  //     'Archive a Gmail message — removes it from the inbox without deleting it. Use this after a message has been processed and filed.',
+  //   input_schema: {
+  //     type: 'object' as const,
+  //     properties: {
+  //       message_id: {
+  //         type: 'string',
+  //         description: 'Gmail message ID to archive',
+  //       },
+  //     },
+  //     required: ['message_id'],
+  //   },
+  // },
   {
-    name: 'gmail_archive',
+    name: "gmail_modify_labels",
     description:
-      'Archive a Gmail message — removes it from the inbox without deleting it. Use this after a message has been processed and filed.',
+      "Add or remove labels on a Gmail message. Use gmail_list_labels first to find label IDs.",
     input_schema: {
-      type: 'object' as const,
+      type: "object" as const,
       properties: {
         message_id: {
-          type: 'string',
-          description: 'Gmail message ID to archive',
-        },
-      },
-      required: ['message_id'],
-    },
-  },
-  {
-    name: 'gmail_modify_labels',
-    description:
-      'Add or remove labels on a Gmail message. Use gmail_list_labels first to find label IDs.',
-    input_schema: {
-      type: 'object' as const,
-      properties: {
-        message_id: {
-          type: 'string',
-          description: 'Gmail message ID',
+          type: "string",
+          description: "Gmail message ID",
         },
         add_label_ids: {
-          type: 'array',
-          items: { type: 'string' },
-          description: 'Label IDs to add',
+          type: "array",
+          items: { type: "string" },
+          description: "Label IDs to add",
         },
         remove_label_ids: {
-          type: 'array',
-          items: { type: 'string' },
-          description: 'Label IDs to remove',
+          type: "array",
+          items: { type: "string" },
+          description: "Label IDs to remove",
         },
       },
-      required: ['message_id'],
+      required: ["message_id"],
     },
   },
   {
-    name: 'gmail_process_inbox',
+    name: "gmail_process_inbox",
     description:
       'Fetch N emails from the inbox that have not yet been processed (i.e. do not have the "🐚 desk" label), write each as a JSON file to the desk input directory, and apply the "🐚 desk" label. Emails are returned most recent first. Run repeatedly to work through the inbox in batches.',
     input_schema: {
-      type: 'object' as const,
+      type: "object" as const,
       properties: {
         n: {
-          type: 'number',
-          description: 'Number of emails to process. Default 5.',
+          type: "number",
+          description: "Number of emails to process. Default 5.",
         },
         desk_input_dir: {
-          type: 'string',
-          description: 'Path to the desk input directory. Defaults to desk/input/ at the repo root.',
+          type: "string",
+          description:
+            "Path to the desk input directory. Defaults to desk/input/ at the repo root.",
         },
       },
       required: [],
     },
   },
-] as const
+] as const;
 
 export type GmailToolName = (typeof gmailTools)[number]['name']
 

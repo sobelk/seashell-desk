@@ -17,6 +17,7 @@ import { filesystemTools, runFilesystemTool, type FilesystemToolName } from './t
 import { taskTools, runTaskTool, type TaskToolName } from './tools/tasks.js'
 import { gmailTools, runGmailTool, type GmailToolName } from './tools/gmail.js'
 import { calendarTools, runCalendarTool, type CalendarToolName } from './tools/calendar.js'
+import { cameraTools, runCameraTool, type CameraToolName } from './tools/camera.js'
 import { GoogleAuth } from './services/google-auth.js'
 import { GmailService } from './services/gmail.js'
 import { CalendarService } from './services/calendar.js'
@@ -52,6 +53,7 @@ const gmailToolNames = new Set<string>(gmailTools.map(t => t.name))
 const calendarToolNames = new Set<string>(calendarTools.map(t => t.name))
 const taskToolNames = new Set<string>(taskTools.map(t => t.name))
 const filesystemToolNames = new Set<string>(filesystemTools.map(t => t.name))
+const cameraToolNames = new Set<string>(cameraTools.map(t => t.name))
 
 async function toolExecutor(toolName: string, input: unknown): Promise<unknown> {
   /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -60,12 +62,13 @@ async function toolExecutor(toolName: string, input: unknown): Promise<unknown> 
   if (taskToolNames.has(toolName)) return runTaskTool(name, input)
   if (gmailToolNames.has(toolName)) return runGmailTool(gmailService, name, input)
   if (calendarToolNames.has(toolName)) return runCalendarTool(calendarService, name, input)
+  if (cameraToolNames.has(toolName)) return runCameraTool(toolName as CameraToolName, input)
   /* eslint-enable @typescript-eslint/no-explicit-any */
   return { error: `Unknown tool: ${toolName}` }
 }
 
 const systemPrompt = buildSystemPrompt(agentMdPath)
-const allTools = [...filesystemTools, ...taskTools, ...gmailTools, ...calendarTools]
+const allTools = [...filesystemTools, ...taskTools, ...gmailTools, ...calendarTools, ...cameraTools]
 
 const result = await runAgent({
   systemPrompt,

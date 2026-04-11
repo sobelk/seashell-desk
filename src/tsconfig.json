@@ -6,7 +6,8 @@
     "strict": true,
     "noUncheckedIndexedAccess": true,
     "outDir": "dist",
-    "jsx": "react-jsx"
+    "jsx": "react-jsx",
+    "types": ["node", "react", "react-dom"]
   },
   "include": ["."],
   "exclude": ["node_modules", "dist"]

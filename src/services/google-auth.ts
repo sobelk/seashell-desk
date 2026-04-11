@@ -15,7 +15,7 @@ export const GOOGLE_SCOPES = [
 const CREDENTIALS_DIR = path.join(import.meta.dirname, '..', '..', '.credentials')
 const TOKEN_PATH = path.join(CREDENTIALS_DIR, 'google-token.json')
 const OAUTH_CLIENT_PATH = path.join(CREDENTIALS_DIR, 'gmail-oauth-client.json')
-const REDIRECT_PORT = 3000
+const REDIRECT_PORT = 59201
 const REDIRECT_URI = `http://localhost:${REDIRECT_PORT}`
 
 export class GoogleAuth {

@@ -3,4 +3,7 @@ logs/
 .credentials/
 node_modules/
 src/.env*
+src/.web-build/
+src/🐍/
+src/camera/.tmp/
 .DS_Store

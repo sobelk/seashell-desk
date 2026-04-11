@@ -1,0 +1,46 @@
+{
+  "auto_optimize": true,
+  "optimal_focus": 200,
+  "optimal_sharpness": 361.40721652847515,
+  "last_working_resolution": [
+    4208,
+    3120
+  ],
+  "saved_bounds": {
+    "type": "manual",
+    "bbox": [
+      582,
+      419,
+      3358,
+      2570
+    ],
+    "corners": [
+      [
+        634.0,
+        419.0
+      ],
+      [
+        582.0,
+        2989.0
+      ],
+      [
+        3940.0,
+        2924.0
+      ],
+      [
+        3817.0,
+        448.0
+      ]
+    ],
+    "area": 8252110.5,
+    "aspect_ratio": 1.306614785992218
+  },
+  "monitor_mount": {
+    "crop": "25,13,50,78",
+    "stack": 3,
+    "high_res": true,
+    "jpeg_quality": 98,
+    "max_dimension": 3000,
+    "note": "Camera mounted on monitor, pointing down at desk"
+  }
+}

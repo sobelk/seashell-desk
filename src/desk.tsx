@@ -9,32 +9,24 @@
  *
  * Usage:
  *   bun run desk
- *   bun run desk --verbose
- *   bun run desk --debounce 3000
+ *   bun run desk --host http://localhost:4312
  */
 
 import React from 'react'
 import { render } from 'ink'
-import { DeskWatcher } from './watcher-core.js'
-import { DeskApp } from './ui/DeskApp.js'
+import { DeskCliApp } from './ui/cli/DeskCliApp.js'
 
 const args = process.argv.slice(2)
-const debounceMs = (() => {
-  const idx = args.indexOf('--debounce')
-  return idx !== -1 ? parseInt(args[idx + 1] ?? '2000', 10) : 2000
+const host = (() => {
+  const idx = args.indexOf('--host')
+  return idx !== -1 ? args[idx + 1] ?? 'http://localhost:4312' : 'http://localhost:4312'
 })()
-const logLevel = args.includes('--verbose') ? 'verbose' : 'normal'
 
-const watcher = new DeskWatcher({ debounceMs, logLevel })
-
-const { unmount } = render(<DeskApp watcher={watcher} />, {
-  exitOnCtrlC: false,  // we handle it ourselves in DeskApp
+const { unmount } = render(<DeskCliApp baseUrl={host} />, {
+  exitOnCtrlC: false,
 })
 
-watcher.start()
-
 process.on('SIGTERM', () => {
-  watcher.stop()
   unmount()
   process.exit(0)
 })

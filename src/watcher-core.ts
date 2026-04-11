@@ -22,6 +22,7 @@ import { gmailTools, runGmailTool, type GmailToolName } from './tools/gmail.js'
 import { calendarTools, runCalendarTool, type CalendarToolName } from './tools/calendar.js'
 import { taskTools, runTaskTool, type TaskToolName } from './tools/tasks.js'
 import { filesystemTools, runFilesystemTool, type FilesystemToolName } from './tools/filesystem.js'
+import { cameraTools, runCameraTool, type CameraToolName } from './tools/camera.js'
 import { runAgent, type ToolDefinition } from './runner.js'
 import { buildSystemPrompt } from './prompt.js'
 import { RunLogger } from './logger.js'
@@ -385,12 +386,14 @@ export class DeskWatcher extends EventEmitter {
   private readonly calendarToolNames = new Set<string>(calendarTools.map((t) => t.name))
   private readonly taskToolNames = new Set<string>(taskTools.map((t) => t.name))
   private readonly filesystemToolNames = new Set<string>(filesystemTools.map((t) => t.name))
+  private readonly cameraToolNames = new Set<string>(cameraTools.map((t) => t.name))
 
   private readonly allTools: ToolDefinition[] = [
     ...filesystemTools,
     ...taskTools,
     ...gmailTools,
     ...calendarTools,
+    ...cameraTools,
   ]
 
   private async toolExecutor(toolName: string, input: unknown): Promise<unknown> {
@@ -399,6 +402,7 @@ export class DeskWatcher extends EventEmitter {
     if (this.taskToolNames.has(toolName)) return runTaskTool(toolName as any, input)
     if (this.gmailToolNames.has(toolName)) return runGmailTool(this.getGmailService(), toolName as any, input)
     if (this.calendarToolNames.has(toolName)) return runCalendarTool(this.getCalendarService(), toolName as any, input)
+    if (this.cameraToolNames.has(toolName)) return runCameraTool(toolName as CameraToolName, input)
     /* eslint-enable @typescript-eslint/no-explicit-any */
     return { error: `Unknown tool: ${toolName}` }
   }
