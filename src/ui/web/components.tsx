@@ -3,6 +3,7 @@ import React from 'react'
 type DivProps = React.HTMLAttributes<HTMLDivElement>
 type ButtonProps = React.ButtonHTMLAttributes<HTMLButtonElement>
 type InputProps = React.InputHTMLAttributes<HTMLInputElement>
+type SelectProps = React.SelectHTMLAttributes<HTMLSelectElement>
 type TextareaProps = React.TextareaHTMLAttributes<HTMLTextAreaElement>
 
 export function Page({ children }: DivProps) {
@@ -17,8 +18,8 @@ export function NavButton({ children, ...props }: ButtonProps) {
   return <button className="nav-button" type="button" {...props}>{children}</button>
 }
 
-export function Card({ children }: DivProps) {
-  return <section className="card">{children}</section>
+export function Card({ children, className = '', ...props }: DivProps) {
+  return <section className={`card ${className}`.trim()} {...props}>{children}</section>
 }
 
 export function Row({ children, className = '', ...props }: DivProps) {
@@ -31,6 +32,10 @@ export function Label({ children }: { children: React.ReactNode }) {
 
 export function TextInput(props: InputProps) {
   return <input className="text-input" {...props} />
+}
+
+export function SelectInput(props: SelectProps) {
+  return <select className="text-input" {...props} />
 }
 
 export function TextArea(props: TextareaProps) {

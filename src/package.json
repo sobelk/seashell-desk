@@ -14,6 +14,7 @@
     "desk": "bun desk.tsx",
     "desk:daemon": "bun server.ts",
     "desk:web": "bun server.ts",
+    "desk:dev": "bun server.ts --dev",
     "send": "bun send.ts",
     "capture": "bun capture.ts",
     "auth": "bun auth.ts"

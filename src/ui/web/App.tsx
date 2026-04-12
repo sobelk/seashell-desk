@@ -3,13 +3,14 @@ import { useDeskConnection } from '../shared/useDeskConnection.js'
 import { urgencyBadge } from '../shared/presentation.js'
 import { agentDisplayName } from '../shared/reducer.js'
 import { ActionButton, Card, Label, NavButton, Page, Row, TextArea, TextInput, TopNav } from './components.js'
+import { CameraPanel } from './CameraPanel.js'
 
-type Route = 'overview' | 'agents' | 'tasks' | 'input'
+type Route = 'overview' | 'agents' | 'tasks' | 'input' | 'camera'
 
 function useRoute(): [Route, (next: Route) => void] {
   const getCurrent = (): Route => {
     const hash = window.location.hash.replace('#', '')
-    if (hash === 'agents' || hash === 'tasks' || hash === 'input') return hash
+    if (hash === 'agents' || hash === 'tasks' || hash === 'input' || hash === 'camera') return hash
     return 'overview'
   }
 
@@ -41,7 +42,17 @@ function ConnectionLine({ connected, error, deskRoot }: { connected: boolean; er
 
 export function App() {
   const baseUrl = `${window.location.protocol}//${window.location.host}`
-  const { snapshot, connected, error, sendMessage } = useDeskConnection({ baseUrl })
+  const {
+    snapshot,
+    connected,
+    error,
+    sendMessage,
+    uploadInputPhoto,
+    detectScannerDocument,
+    scanScannerDocument,
+    saveScannerBounds,
+    clearScannerBounds,
+  } = useDeskConnection({ baseUrl })
   const [route, setRoute] = useRoute()
   const [agentRelPath, setAgentRelPath] = useState('input')
   const [message, setMessage] = useState('')
@@ -107,6 +118,7 @@ export function App() {
         <NavButton onClick={() => setRoute('agents')}>Agents</NavButton>
         <NavButton onClick={() => setRoute('tasks')}>Tasks</NavButton>
         <NavButton onClick={() => setRoute('input')}>Input</NavButton>
+        <NavButton onClick={() => setRoute('camera')}>Camera</NavButton>
       </TopNav>
 
       {route === 'overview' && (
@@ -194,6 +206,16 @@ export function App() {
             </div>
           </Card>
         </div>
+      )}
+
+      {route === 'camera' && (
+        <CameraPanel
+          uploadInputPhoto={uploadInputPhoto}
+          detectScannerDocument={detectScannerDocument}
+          scanScannerDocument={scanScannerDocument}
+          saveScannerBounds={saveScannerBounds}
+          clearScannerBounds={clearScannerBounds}
+        />
       )}
     </Page>
   )

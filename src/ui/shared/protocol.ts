@@ -46,4 +46,5 @@ export type DeskEvent =
 export type ServerMessage =
   | { type: 'snapshot'; snapshot: DeskSnapshot }
   | { type: 'event'; event: DeskEvent }
+  | { type: 'reload' }
 
