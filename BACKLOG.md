@@ -22,7 +22,7 @@ Ideas and limitations encountered while building Seashell Desk.
 - [x] **Triage CLI** — `bun run triage` runs the input triage agent autonomously. Supports `--verbose`, `--dry-run`, `--silent`.
 - [x] **Gmail sync CLI** — `bun run sync` fetches unprocessed inbox emails into `desk/input/`. Supports `--n`, `--after`, `--before`, `--label`, `--query`, `--all`, `--dry-run`.
 - [x] **File watcher** — `bun run watch` monitors the entire `desk/` directory recursively. Finds the nearest `AGENT.md` to each change, debounces, and runs agents sequentially. Suppresses self-loops; allows cross-agent handoffs.
-- [x] **Task completion tool** — `complete_task` marks a task done in both project and top-level `desk/tasks/`. Accepts optional `resolution` note.
+- [x] **Task update tool** — `update_task` changes task status or priority on the single canonical task file owned by an agent directory.
 - [x] **Agent scoping guidance** — all AGENT.md files updated with explicit scope boundaries. Project agents stay in their own directory; triage orchestrates across siblings.
 - [x] **`gmail_get_attachment` binary save** — `output_path` parameter saves decoded binary directly to disk. Fixes mangled PDFs from agents writing base64 via `write_file`.
 

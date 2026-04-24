@@ -1,12 +1,10 @@
 /**
  * Task management tools for LLM tool-call workflows (Anthropic tool_use format).
  *
- * Tasks are written to two locations:
- *   - desk/projects/{project}/tasks/{id}.md  (project-level)
- *   - desk/tasks/{id}.md                     (top-level consolidated view)
+ * Each task lives in exactly one owning agent directory:
+ *   - desk/{owner_path}/tasks/{id}.md
  *
- * Both files are identical. The top-level desk/tasks/ is the single place
- * to browse all open tasks across projects, sorted however you like.
+ * The owner is the closest directory containing an AGENT.md file.
  */
 
 import { z } from 'zod'
@@ -14,7 +12,9 @@ import { writeFileSync, readFileSync, mkdirSync, existsSync } from 'fs'
 import path from 'path'
 
 const DESK_ROOT = path.join(import.meta.dirname, '..', '..', 'desk')
-const TASKS_DIR = path.join(DESK_ROOT, 'tasks')
+
+type TaskPriority = 'critical' | 'high' | 'medium' | 'low'
+type TaskStatus = 'open' | 'done' | 'ignored'
 
 // ---------------------------------------------------------------------------
 // Tool definitions (Anthropic tool_use format)
@@ -22,32 +22,9 @@ const TASKS_DIR = path.join(DESK_ROOT, 'tasks')
 
 export const taskTools = [
   {
-    name: 'complete_task',
-    description:
-      'Mark a task as done. Updates the status field in both the project-level and top-level task files. Use when Kieran has completed a task or when triage determines a task is no longer relevant.',
-    input_schema: {
-      type: 'object' as const,
-      properties: {
-        id: {
-          type: 'string',
-          description: 'Task ID (the filename without .md extension, e.g. "pay-att-balance-2026-03-28").',
-        },
-        project: {
-          type: 'string',
-          description: 'Project the task belongs to. Used to locate the project-level file.',
-        },
-        resolution: {
-          type: 'string',
-          description: 'Optional one-line note on how the task was completed or why it was closed.',
-        },
-      },
-      required: ['id', 'project'],
-    },
-  },
-  {
     name: 'create_task',
     description:
-      'Create an actionable task for Kieran. Writes to both the project\'s own tasks/ directory and the top-level desk/tasks/ directory. Use for anything Kieran needs to do or decide — paying a bill, responding to an email, a deadline approaching, etc.',
+      'Create an actionable task for Kieran inside the owning agent directory. Use for anything Kieran needs to do or decide.',
     input_schema: {
       type: 'object' as const,
       properties: {
@@ -55,15 +32,24 @@ export const taskTools = [
           type: 'string',
           description: 'Short, action-oriented title starting with a verb. E.g. "Pay AT&T balance of $96.30".',
         },
+        owner_path: {
+          type: 'string',
+          description: 'Path to the owning agent directory relative to desk/, e.g. "projects/finance" or "input". Must contain an AGENT.md file.',
+        },
         project: {
           type: 'string',
-          description: 'Project this task belongs to. Must match a directory name under desk/projects/.',
+          description: 'Legacy alias for the project directory name under desk/projects/. Prefer owner_path.',
         },
-        urgency: {
+        priority: {
           type: 'string',
           enum: ['critical', 'high', 'medium', 'low'],
           description:
             'critical = needs attention today; high = this week; medium = this month; low = whenever.',
+        },
+        urgency: {
+          type: 'string',
+          enum: ['critical', 'high', 'medium', 'low'],
+          description: 'Legacy alias for priority. Prefer priority.',
         },
         due: {
           type: 'string',
@@ -74,7 +60,45 @@ export const taskTools = [
           description: 'Context, relevant details, or suggested next steps.',
         },
       },
-      required: ['title', 'project', 'urgency'],
+      required: ['title'],
+    },
+  },
+  {
+    name: 'update_task',
+    description:
+      'Update structured task fields on an existing task. Use to change status or priority while leaving title/body edits to write_file.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        path: {
+          type: 'string',
+          description: 'Path to the task markdown file relative to desk/, e.g. "projects/finance/tasks/pay-att-balance-2026-03-28.md".',
+        },
+        id: {
+          type: 'string',
+          description: 'Legacy lookup field: task id (filename without .md). Use with project when path is omitted.',
+        },
+        project: {
+          type: 'string',
+          description: 'Legacy lookup field: project directory name under desk/projects/. Use with id when path is omitted.',
+        },
+        status: {
+          type: 'string',
+          enum: ['open', 'done', 'ignored'],
+          description: 'Task status. Use done for completed work and ignored for intentionally closed work.',
+        },
+        priority: {
+          type: 'string',
+          enum: ['critical', 'high', 'medium', 'low'],
+          description: 'Updated task priority.',
+        },
+        urgency: {
+          type: 'string',
+          enum: ['critical', 'high', 'medium', 'low'],
+          description: 'Legacy alias for priority. Prefer priority.',
+        },
+      },
+      required: [],
     },
   },
 ] as const
@@ -85,38 +109,36 @@ export type TaskToolName = (typeof taskTools)[number]['name']
 // Input schemas
 // ---------------------------------------------------------------------------
 
-const CompleteTaskInput = z.object({
-  id: z.string().min(1),
-  project: z.string().min(1),
-  resolution: z.string().optional(),
-})
-
 const CreateTaskInput = z.object({
   title: z.string().min(1),
-  project: z.string().min(1),
-  urgency: z.enum(['critical', 'high', 'medium', 'low']),
+  owner_path: z.string().min(1).optional(),
+  project: z.string().min(1).optional(),
+  priority: z.enum(['critical', 'high', 'medium', 'low']).optional(),
+  urgency: z.enum(['critical', 'high', 'medium', 'low']).optional(),
   due: z.string().optional(),
   notes: z.string().optional(),
+}).refine((input) => Boolean(input.owner_path || input.project), {
+  message: 'owner_path or project is required',
 })
+
+const UpdateTaskInput = z.object({
+  path: z.string().min(1).optional(),
+  id: z.string().min(1).optional(),
+  project: z.string().min(1).optional(),
+  status: z.enum(['open', 'done', 'ignored']).optional(),
+  priority: z.enum(['critical', 'high', 'medium', 'low']).optional(),
+  urgency: z.enum(['critical', 'high', 'medium', 'low']).optional(),
+}).refine(
+  (input) => Boolean(input.path || (input.id && input.project)),
+  { message: 'path or id+project is required' },
+).refine(
+  (input) => Boolean(input.status || input.priority || input.urgency),
+  { message: 'at least one of status or priority is required' },
+)
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-function completeTaskFile(filePath: string, resolution?: string): void {
-  const content = readFileSync(filePath, 'utf8')
-  const completed = new Date().toISOString().slice(0, 10)
-
-  // Replace status line and append completed date inside frontmatter
-  let updated = content.replace(/^status: open$/m, `status: done\ncompleted: ${completed}`)
-
-  // Append resolution as a body section if provided
-  if (resolution) {
-    updated = updated.trimEnd() + `\n\nResolution: ${resolution}\n`
-  }
-
-  writeFileSync(filePath, updated)
-}
 
 function slugify(str: string): string {
   return str
@@ -126,28 +148,161 @@ function slugify(str: string): string {
     .slice(0, 50)
 }
 
-function renderTask(fields: {
+function normalizeRelativePath(value: string): string {
+  return value.replace(/\\/g, '/').replace(/^\/+/, '').replace(/\/+$/, '')
+}
+
+function resolveOwnerPath(ownerPath?: string, project?: string): string {
+  if (ownerPath) return normalizeRelativePath(ownerPath)
+  return `projects/${project!}`
+}
+
+function resolvePriority(priority?: TaskPriority, urgency?: TaskPriority): TaskPriority {
+  return priority ?? urgency ?? 'medium'
+}
+
+function resolvePriorityPatch(priority?: TaskPriority, urgency?: TaskPriority): TaskPriority | undefined {
+  return priority ?? urgency
+}
+
+function taskAbsolutePath(relativePath: string): string {
+  return path.join(DESK_ROOT, normalizeRelativePath(relativePath))
+}
+
+function ensureAgentOwnerPath(ownerPath: string): string {
+  const normalized = normalizeRelativePath(ownerPath)
+  const agentPath = path.join(DESK_ROOT, normalized, 'AGENT.md')
+  if (!existsSync(agentPath)) {
+    throw new Error(`Owner path does not contain an AGENT.md: ${normalized}`)
+  }
+  return normalized
+}
+
+function splitTaskDocument(content: string): { frontmatter: Record<string, string>; body: string } {
+  const match = content.match(/^---\n([\s\S]*?)\n---(?:\n([\s\S]*))?$/)
+  if (!match) return { frontmatter: {}, body: content }
+
+  const frontmatter: Record<string, string> = {}
+  const frontmatterBlock = match[1] ?? ''
+  for (const line of frontmatterBlock.split('\n')) {
+    const separator = line.indexOf(':')
+    if (separator === -1) continue
+    const key = line.slice(0, separator).trim()
+    const value = line.slice(separator + 1).trim().replace(/^['"]|['"]$/g, '')
+    if (key) frontmatter[key] = value
+  }
+
+  return {
+    frontmatter,
+    body: match[2] ?? '',
+  }
+}
+
+function renderTaskDocument(fields: {
   id: string
   title: string
-  urgency: string
+  priority: TaskPriority
   due?: string
-  project: string
+  ownerPath: string
   created: string
-  notes?: string
+  status: TaskStatus
+  closed?: string
+  body?: string
 }): string {
   const lines = [
     '---',
     `id: ${fields.id}`,
-    `title: "${fields.title}"`,
-    `urgency: ${fields.urgency}`,
+    `title: ${JSON.stringify(fields.title)}`,
+    `priority: ${fields.priority}`,
     ...(fields.due ? [`due: ${fields.due}`] : []),
-    `project: ${fields.project}`,
+    `owner_path: ${fields.ownerPath}`,
     `created: ${fields.created}`,
-    `status: open`,
+    `status: ${fields.status}`,
+    ...(fields.closed ? [`closed: ${fields.closed}`] : []),
     '---',
   ]
   const frontmatter = lines.join('\n')
-  return fields.notes ? `${frontmatter}\n\n${fields.notes}\n` : `${frontmatter}\n`
+  const body = fields.body?.trim()
+  return body ? `${frontmatter}\n\n${body}\n` : `${frontmatter}\n`
+}
+
+function readTaskTaskDocument(relativePath: string): {
+  relativePath: string
+  absolutePath: string
+  id: string
+  title: string
+  priority: TaskPriority
+  status: TaskStatus
+  created: string
+  due?: string
+  closed?: string
+  ownerPath: string
+  body: string
+} {
+  const normalizedPath = normalizeRelativePath(relativePath)
+  const absolutePath = taskAbsolutePath(normalizedPath)
+  if (!existsSync(absolutePath)) {
+    throw new Error(`Task not found: ${normalizedPath}`)
+  }
+
+  const content = readFileSync(absolutePath, 'utf8')
+  const { frontmatter, body } = splitTaskDocument(content)
+  const id = frontmatter.id?.trim() || path.basename(normalizedPath, '.md')
+  const title = frontmatter.title?.trim()
+  if (!title) {
+    throw new Error(`Task is missing a title: ${normalizedPath}`)
+  }
+
+  const ownerPath = ensureAgentOwnerPath(frontmatter.owner_path?.trim() || path.dirname(normalizedPath).replace(/\/tasks$/, ''))
+  return {
+    relativePath: normalizedPath,
+    absolutePath,
+    id,
+    title,
+    priority: resolvePriority(frontmatter.priority as TaskPriority | undefined, frontmatter.urgency as TaskPriority | undefined),
+    status: (frontmatter.status === 'done' || frontmatter.status === 'ignored' ? frontmatter.status : 'open') as TaskStatus,
+    created: frontmatter.created?.trim() || new Date().toISOString().slice(0, 10),
+    due: frontmatter.due?.trim(),
+    closed: frontmatter.closed?.trim() || frontmatter.completed?.trim(),
+    ownerPath,
+    body,
+  }
+}
+
+function resolveTaskPath(input: { path?: string; id?: string; project?: string }): string {
+  if (input.path) return normalizeRelativePath(input.path)
+  return normalizeRelativePath(`projects/${input.project!}/tasks/${input.id!}.md`)
+}
+
+export function updateTaskAtRelativePath(
+  relativePath: string,
+  updates: { status?: TaskStatus; priority?: TaskPriority },
+): { id: string; path: string; paths: string[]; status: TaskStatus; priority: TaskPriority } {
+  const task = readTaskTaskDocument(relativePath)
+  const nextStatus = updates.status ?? task.status
+  const nextPriority = updates.priority ?? task.priority
+  const closed = nextStatus === 'open'
+    ? undefined
+    : (task.status === nextStatus ? task.closed : undefined) ?? new Date().toISOString().slice(0, 10)
+  const content = renderTaskDocument({
+    id: task.id,
+    title: task.title,
+    priority: nextPriority,
+    due: task.due,
+    ownerPath: task.ownerPath,
+    created: task.created,
+    status: nextStatus,
+    closed,
+    body: task.body,
+  })
+  writeFileSync(task.absolutePath, content)
+  return {
+    id: task.id,
+    path: task.relativePath,
+    paths: [task.relativePath],
+    status: nextStatus,
+    priority: nextPriority,
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -157,52 +312,42 @@ function renderTask(fields: {
 export async function runTaskTool(toolName: TaskToolName, input: unknown): Promise<unknown> {
   try {
     switch (toolName) {
-      case 'complete_task': {
-        const { id, project, resolution } = CompleteTaskInput.parse(input)
-        const filename = `${id}.md`
-
-        const projectPath = path.join(DESK_ROOT, 'projects', project, 'tasks', filename)
-        const topPath = path.join(TASKS_DIR, filename)
-        const updated: string[] = []
-
-        if (existsSync(projectPath)) {
-          completeTaskFile(projectPath, resolution)
-          updated.push(`desk/projects/${project}/tasks/${filename}`)
-        }
-        if (existsSync(topPath)) {
-          completeTaskFile(topPath, resolution)
-          updated.push(`desk/tasks/${filename}`)
-        }
-
-        if (updated.length === 0) {
-          return { error: `Task not found: ${id} (project: ${project})` }
-        }
-
-        return { id, status: 'done', updated }
-      }
-
       case 'create_task': {
-        const { title, project, urgency, due, notes } = CreateTaskInput.parse(input)
+        const { title, owner_path, project, priority, urgency, due, notes } = CreateTaskInput.parse(input)
 
         const created = new Date().toISOString().slice(0, 10)
         const id = `${slugify(title)}-${created}`
         const filename = `${id}.md`
-        const content = renderTask({ id, title, urgency, due, project, created, notes })
-
-        const projectTasksDir = path.join(DESK_ROOT, 'projects', project, 'tasks')
-        mkdirSync(projectTasksDir, { recursive: true })
-        writeFileSync(path.join(projectTasksDir, filename), content)
-
-        mkdirSync(TASKS_DIR, { recursive: true })
-        writeFileSync(path.join(TASKS_DIR, filename), content)
+        const resolvedOwnerPath = ensureAgentOwnerPath(resolveOwnerPath(owner_path, project))
+        const content = renderTaskDocument({
+          id,
+          title,
+          priority: resolvePriority(priority, urgency),
+          due,
+          ownerPath: resolvedOwnerPath,
+          created,
+          status: 'open',
+          body: notes,
+        })
+        const tasksDir = path.join(DESK_ROOT, resolvedOwnerPath, 'tasks')
+        mkdirSync(tasksDir, { recursive: true })
+        writeFileSync(path.join(tasksDir, filename), content)
+        const relativePath = `${resolvedOwnerPath}/tasks/${filename}`
 
         return {
           id,
-          paths: [
-            `desk/projects/${project}/tasks/${filename}`,
-            `desk/tasks/${filename}`,
-          ],
+          path: relativePath,
+          paths: [relativePath],
+          owner_path: resolvedOwnerPath,
         }
+      }
+
+      case 'update_task': {
+        const { path: taskPath, id, project, status, priority, urgency } = UpdateTaskInput.parse(input)
+        return updateTaskAtRelativePath(resolveTaskPath({ path: taskPath, id, project }), {
+          status,
+          priority: resolvePriorityPatch(priority, urgency),
+        })
       }
     }
   } catch (err) {

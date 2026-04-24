@@ -4,10 +4,18 @@ export interface FileChange {
   ts: string
 }
 
+export type TaskPriority = 'critical' | 'high' | 'medium' | 'low'
+export type TaskStatus = 'open' | 'done' | 'ignored'
+
 export interface TaskItem {
   id: string
   title: string
-  urgency: 'critical' | 'high' | 'medium' | 'low'
+  priority: TaskPriority
+  status: TaskStatus
+  created: string
+  due: string
+  ownerPath: string
+  relativePath: string
 }
 
 export interface AgentState {
@@ -47,4 +55,3 @@ export type ServerMessage =
   | { type: 'snapshot'; snapshot: DeskSnapshot }
   | { type: 'event'; event: DeskEvent }
   | { type: 'reload' }
-

@@ -10,9 +10,9 @@ export function classifyLine(line: string): LineKind {
   return 'other'
 }
 
-export function urgencyBadge(urgency: TaskItem['urgency']): string {
-  if (urgency === 'critical') return '!!'
-  if (urgency === 'high') return ' !'
+export function priorityBadge(priority: TaskItem['priority']): string {
+  if (priority === 'critical') return '!!'
+  if (priority === 'high') return ' !'
   return '  '
 }
 

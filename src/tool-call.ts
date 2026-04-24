@@ -8,7 +8,7 @@
  *
  * Examples:
  *   bun run tool-call gmail_search '{"query": "is:unread in:inbox"}'
- *   bun run tool-call create_task '{"title": "Pay AT&T balance", "project": "finance", "urgency": "high"}'
+ *   bun run tool-call create_task '{"title": "Pay AT&T balance", "owner_path": "projects/finance", "priority": "high"}'
  *   bun run tool-call gcal_list_calendars
  */
 

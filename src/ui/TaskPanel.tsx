@@ -2,68 +2,59 @@ import React, { useEffect, useState } from 'react'
 import { Box, Text } from 'ink'
 import { readdirSync, readFileSync, existsSync } from 'fs'
 import path from 'path'
-
-interface Task {
-  id: string
-  title: string
-  urgency: 'critical' | 'high' | 'medium' | 'low'
-}
+import { priorityBadge } from './shared/presentation.js'
+import { parseTaskContent, sortTasksByCreatedDesc } from './shared/tasks.js'
+import type { TaskItem } from './shared/protocol.js'
 
 interface Props {
   deskRoot: string
   height: number
 }
 
-function parseTask(filePath: string): Task | null {
-  try {
-    const content = readFileSync(filePath, 'utf8')
-    const titleMatch = content.match(/^title:\s*"?(.+?)"?\s*$/m)
-    const urgencyMatch = content.match(/^urgency:\s*(.+)$/m)
-    const statusMatch = content.match(/^status:\s*(.+)$/m)
-    if (statusMatch?.[1]?.trim() === 'done') return null
-    if (!titleMatch) return null
-    return {
-      id: path.basename(filePath),
-      title: titleMatch[1]?.trim() ?? '',
-      urgency: (urgencyMatch?.[1]?.trim() ?? 'medium') as Task['urgency'],
-    }
-  } catch {
-    return null
-  }
-}
-
-function urgencyColor(u: Task['urgency']): string {
-  if (u === 'critical') return 'red'
-  if (u === 'high') return 'yellow'
-  if (u === 'medium') return 'cyan'
+function priorityColor(priority: TaskItem['priority']): string {
+  if (priority === 'critical') return 'red'
+  if (priority === 'high') return 'yellow'
+  if (priority === 'medium') return 'cyan'
   return 'gray'
 }
 
-function urgencyBadge(u: Task['urgency']): string {
-  if (u === 'critical') return '!!'
-  if (u === 'high') return ' !'
-  if (u === 'medium') return '  '
-  return '  '
+function collectTasks(dir: string, deskRoot: string, relDir = ''): TaskItem[] {
+  const tasks: TaskItem[] = []
+  try {
+    const entries = readdirSync(dir, { withFileTypes: true })
+    for (const entry of entries) {
+      if (entry.name.startsWith('.')) continue
+      const relPath = relDir ? `${relDir}/${entry.name}` : entry.name
+      const fullPath = path.join(dir, entry.name)
+      if (entry.isDirectory()) {
+        tasks.push(...collectTasks(fullPath, deskRoot, relPath))
+        continue
+      }
+      if (!entry.isFile() || !relPath.endsWith('.md')) continue
+
+      const ownerPath = relPath.includes('/tasks/') ? relPath.slice(0, relPath.indexOf('/tasks/')) : ''
+      if (!ownerPath || !existsSync(path.join(deskRoot, ownerPath, 'AGENT.md'))) continue
+
+      try {
+        const task = parseTaskContent(relPath, readFileSync(fullPath, 'utf8'))
+        if (task) tasks.push(task)
+      } catch {
+        // Ignore unreadable task files.
+      }
+    }
+  } catch {
+    return []
+  }
+  return tasks
 }
 
 export function TaskPanel({ deskRoot, height }: Props) {
-  const [tasks, setTasks] = useState<Task[]>([])
+  const [tasks, setTasks] = useState<TaskItem[]>([])
 
   useEffect(() => {
     const refresh = () => {
-      const tasksDir = path.join(deskRoot, 'tasks')
-      if (!existsSync(tasksDir)) { setTasks([]); return }
-      try {
-        const loaded = readdirSync(tasksDir)
-          .filter((f) => f.endsWith('.md'))
-          .map((f) => parseTask(path.join(tasksDir, f)))
-          .filter((t): t is Task => t !== null)
-          .sort((a, b) => {
-            const order = { critical: 0, high: 1, medium: 2, low: 3 }
-            return order[a.urgency] - order[b.urgency]
-          })
-        setTasks(loaded)
-      } catch { setTasks([]) }
+      if (!existsSync(deskRoot)) { setTasks([]); return }
+      setTasks(sortTasksByCreatedDesc(collectTasks(deskRoot, deskRoot)))
     }
     refresh()
     const timer = setInterval(refresh, 2000)
@@ -83,8 +74,8 @@ export function TaskPanel({ deskRoot, height }: Props) {
       {tasks.length === 0
         ? <Text color="gray" dimColor>  (none)</Text>
         : tasks.map((t) => (
-          <Text key={t.id} color={urgencyColor(t.urgency)} wrap="truncate">
-            {urgencyBadge(t.urgency)} {t.title}
+          <Text key={t.relativePath} color={priorityColor(t.priority)} wrap="truncate">
+            {priorityBadge(t.priority)} {t.title}
           </Text>
         ))
       }
