@@ -18,12 +18,20 @@ export interface TaskItem {
   relativePath: string
 }
 
+export interface AgentStreamingState {
+  streamId: string
+  /** Index into `AgentState.logs` of the line currently being streamed. */
+  logIndex: number
+}
+
 export interface AgentState {
   path: string
   name: string
   logs: string[]
   active: boolean
   waiting: boolean
+  /** Non-null while an agent text block is actively streaming into `logs`. */
+  streaming: AgentStreamingState | null
 }
 
 export interface DeskSnapshot {
@@ -46,12 +54,20 @@ export type DeskEvent =
   | { type: 'agent:waiting'; agentPath: string; waiting: boolean }
   | { type: 'agent:done'; agentPath: string; rounds: number; hitLimit: boolean; response: string }
   | { type: 'agent:error'; agentPath: string; error: string }
+  // Streaming LLM text from the runner. Clients should render a new (empty)
+  // agent log entry on `start`, append each `delta.text` to that entry, and
+  // treat `end` as a finalization marker (no content change).
+  | { type: 'agent:stream:start'; agentPath: string; streamId: string }
+  | { type: 'agent:stream:delta'; agentPath: string; streamId: string; delta: string }
+  | { type: 'agent:stream:end'; agentPath: string; streamId: string }
   | { type: 'user:message'; agentPath: string; message: string }
   | { type: 'input:files'; files: string[] }
   | { type: 'tasks:update'; tasks: TaskItem[] }
   | { type: 'agents:update'; agentPaths: string[] }
+  | { type: 'agent-files:changed'; change: FileChange }
 
 export type ServerMessage =
   | { type: 'snapshot'; snapshot: DeskSnapshot }
   | { type: 'event'; event: DeskEvent }
   | { type: 'reload' }
+

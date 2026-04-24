@@ -42,7 +42,7 @@ export function InputBar({ width, agentPaths, isActive, onSend }: Props) {
       const atMatch = value.match(/@([\w/.-]*)$/)
       if (atMatch) {
         const query = atMatch[1] ?? ''
-        const match = agentPaths.find(p => p.startsWith(query))
+        const match = agentPaths.find(p => p.length > 0 && p.startsWith(query))
         if (match) {
           setValue(value.slice(0, value.length - atMatch[0].length) + '@' + match + ' ')
         }
@@ -63,7 +63,7 @@ export function InputBar({ width, agentPaths, isActive, onSend }: Props) {
   // Determine autocomplete completions
   const atMatch = value.match(/@([\w/.-]*)$/)
   const completions = atMatch
-    ? agentPaths.filter(p => p.startsWith(atMatch[1] ?? '')).slice(0, 5)
+    ? agentPaths.filter(p => p.length > 0 && p.startsWith(atMatch[1] ?? '')).slice(0, 5)
     : []
 
   const cursor = isActive ? (cursorOn ? '▋' : ' ') : ''

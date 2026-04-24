@@ -43,6 +43,21 @@ export function appendLog(logs: string[], line: string): string[] {
   return next.length > MAX_LOG_LINES ? next.slice(-MAX_LOG_LINES) : next
 }
 
+/** Start a new streaming agent line; returns updated logs + the line's index. */
+function startStreamingLine(logs: string[]): { logs: string[]; logIndex: number } {
+  const next = [...logs, '[agent] ']
+  const trimmed = next.length > MAX_LOG_LINES ? next.slice(-MAX_LOG_LINES) : next
+  return { logs: trimmed, logIndex: trimmed.length - 1 }
+}
+
+/** Append a delta to the line at `logIndex`, returning a new logs array. */
+function appendStreamingDelta(logs: string[], logIndex: number, delta: string): string[] {
+  if (logIndex < 0 || logIndex >= logs.length) return logs
+  const next = logs.slice()
+  next[logIndex] = (next[logIndex] ?? '') + delta
+  return next
+}
+
 export function createInitialSnapshot(deskRoot: string): DeskSnapshot {
   return {
     deskRoot,
@@ -52,6 +67,7 @@ export function createInitialSnapshot(deskRoot: string): DeskSnapshot {
       logs: [],
       active: false,
       waiting: false,
+      streaming: null,
     },
     project: null,
     queueRunning: null,
@@ -123,13 +139,14 @@ export function applyDeskEvent(snapshot: DeskSnapshot, event: DeskEvent): DeskSn
     return applyToAgent(
       snapshot,
       event.agentPath,
-      (triage) => ({ ...triage, active: true, waiting: false }),
+      (triage) => ({ ...triage, active: true, waiting: false, streaming: null }),
       () => ({
         path: event.agentPath,
         name: agentDisplayName(event.agentPath, snapshot.deskRoot),
         logs: [],
         active: true,
         waiting: false,
+        streaming: null,
       }),
     )
   }
@@ -138,10 +155,58 @@ export function applyDeskEvent(snapshot: DeskSnapshot, event: DeskEvent): DeskSn
     return applyToAgent(
       snapshot,
       event.agentPath,
-      (triage) => ({ ...triage, logs: appendLog(triage.logs, event.message) }),
+      (triage) => ({ ...triage, logs: appendLog(triage.logs, event.message), streaming: null }),
       (project) => {
         if (!project || project.path !== event.agentPath) return project
-        return { ...project, logs: appendLog(project.logs, event.message) }
+        return { ...project, logs: appendLog(project.logs, event.message), streaming: null }
+      },
+    )
+  }
+
+  if (event.type === 'agent:stream:start') {
+    return applyToAgent(
+      snapshot,
+      event.agentPath,
+      (triage) => {
+        const { logs, logIndex } = startStreamingLine(triage.logs)
+        return { ...triage, logs, streaming: { streamId: event.streamId, logIndex } }
+      },
+      (project) => {
+        if (!project || project.path !== event.agentPath) return project
+        const { logs, logIndex } = startStreamingLine(project.logs)
+        return { ...project, logs, streaming: { streamId: event.streamId, logIndex } }
+      },
+    )
+  }
+
+  if (event.type === 'agent:stream:delta') {
+    return applyToAgent(
+      snapshot,
+      event.agentPath,
+      (triage) => {
+        if (!triage.streaming || triage.streaming.streamId !== event.streamId) return triage
+        return { ...triage, logs: appendStreamingDelta(triage.logs, triage.streaming.logIndex, event.delta) }
+      },
+      (project) => {
+        if (!project || project.path !== event.agentPath) return project
+        if (!project.streaming || project.streaming.streamId !== event.streamId) return project
+        return { ...project, logs: appendStreamingDelta(project.logs, project.streaming.logIndex, event.delta) }
+      },
+    )
+  }
+
+  if (event.type === 'agent:stream:end') {
+    return applyToAgent(
+      snapshot,
+      event.agentPath,
+      (triage) => {
+        if (!triage.streaming || triage.streaming.streamId !== event.streamId) return triage
+        return { ...triage, streaming: null }
+      },
+      (project) => {
+        if (!project || project.path !== event.agentPath) return project
+        if (!project.streaming || project.streaming.streamId !== event.streamId) return project
+        return { ...project, streaming: null }
       },
     )
   }
@@ -202,6 +267,7 @@ export function applyDeskEvent(snapshot: DeskSnapshot, event: DeskEvent): DeskSn
             logs: [line],
             active: false,
             waiting: false,
+            streaming: null,
           }
         }
         return { ...project, logs: appendLog(project.logs, line) }
@@ -212,6 +278,7 @@ export function applyDeskEvent(snapshot: DeskSnapshot, event: DeskEvent): DeskSn
   if (event.type === 'input:files') return { ...snapshot, inputFiles: event.files }
   if (event.type === 'tasks:update') return { ...snapshot, tasks: event.tasks }
   if (event.type === 'agents:update') return { ...snapshot, agentPaths: event.agentPaths }
+  if (event.type === 'agent-files:changed') return snapshot // pass-through; UI reacts via onEvent
 
   return snapshot
 }

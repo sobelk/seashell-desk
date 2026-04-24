@@ -14,6 +14,12 @@ interface AgentState {
   logs: string[]
   active: boolean
   waiting: boolean
+  /**
+   * When non-null, the log line at `logIndex` is the one currently being
+   * streamed from the model. Deltas append into that slot; a `stream:end`
+   * clears the marker.
+   */
+  streaming: { streamId: string; logIndex: number } | null
 }
 
 const MAX_LOG_LINES = 2000
@@ -35,6 +41,19 @@ function appendLog(logs: string[], line: string): string[] {
   const incoming = line.split('\n').filter((l) => l.length > 0)
   const next = [...logs, ...incoming]
   return next.length > MAX_LOG_LINES ? next.slice(-MAX_LOG_LINES) : next
+}
+
+function startStreamingLine(logs: string[]): { logs: string[]; logIndex: number } {
+  const next = [...logs, '[agent] ']
+  const trimmed = next.length > MAX_LOG_LINES ? next.slice(-MAX_LOG_LINES) : next
+  return { logs: trimmed, logIndex: trimmed.length - 1 }
+}
+
+function appendStreamingDelta(logs: string[], logIndex: number, delta: string): string[] {
+  if (logIndex < 0 || logIndex >= logs.length) return logs
+  const next = logs.slice()
+  next[logIndex] = (next[logIndex] ?? '') + delta
+  return next
 }
 
 function loadInputFiles(deskRoot: string): string[] {
@@ -64,6 +83,7 @@ export function DeskApp({ watcher }: Props) {
     logs: [],
     active: false,
     waiting: false,
+    streaming: null,
   })
   const [project, setProject] = useState<AgentState | null>(null)
 
@@ -103,21 +123,60 @@ export function DeskApp({ watcher }: Props) {
 
   const onAgentStart = useCallback((agentPath: string) => {
     if (isTriage(agentPath, watcher.deskRoot)) {
-      setTriage((prev) => ({ ...prev, active: true, waiting: false }))
+      setTriage((prev) => ({ ...prev, active: true, waiting: false, streaming: null }))
     } else {
       const name = agentDisplayName(agentPath, watcher.deskRoot)
-      setProject({ path: agentPath, name, logs: [], active: true, waiting: false })
+      setProject({ path: agentPath, name, logs: [], active: true, waiting: false, streaming: null })
     }
   }, [watcher.deskRoot])
 
   const onAgentLog = useCallback((agentPath: string, message: string) => {
     if (isTriage(agentPath, watcher.deskRoot)) {
-      setTriage((prev) => ({ ...prev, logs: appendLog(prev.logs, message) }))
+      setTriage((prev) => ({ ...prev, logs: appendLog(prev.logs, message), streaming: null }))
     } else {
       setProject((prev) => {
         if (!prev || prev.path !== agentPath) return prev
-        return { ...prev, logs: appendLog(prev.logs, message) }
+        return { ...prev, logs: appendLog(prev.logs, message), streaming: null }
       })
+    }
+  }, [watcher.deskRoot])
+
+  const onAgentStreamStart = useCallback((agentPath: string, streamId: string) => {
+    if (isTriage(agentPath, watcher.deskRoot)) {
+      setTriage((prev) => {
+        const { logs, logIndex } = startStreamingLine(prev.logs)
+        return { ...prev, logs, streaming: { streamId, logIndex } }
+      })
+    } else {
+      setProject((prev) => {
+        if (!prev || prev.path !== agentPath) return prev
+        const { logs, logIndex } = startStreamingLine(prev.logs)
+        return { ...prev, logs, streaming: { streamId, logIndex } }
+      })
+    }
+  }, [watcher.deskRoot])
+
+  const onAgentStreamDelta = useCallback((agentPath: string, streamId: string, delta: string) => {
+    const apply = (prev: AgentState): AgentState => {
+      if (!prev.streaming || prev.streaming.streamId !== streamId) return prev
+      return { ...prev, logs: appendStreamingDelta(prev.logs, prev.streaming.logIndex, delta) }
+    }
+    if (isTriage(agentPath, watcher.deskRoot)) {
+      setTriage(apply)
+    } else {
+      setProject((prev) => (prev && prev.path === agentPath ? apply(prev) : prev))
+    }
+  }, [watcher.deskRoot])
+
+  const onAgentStreamEnd = useCallback((agentPath: string, streamId: string) => {
+    const apply = (prev: AgentState): AgentState => {
+      if (!prev.streaming || prev.streaming.streamId !== streamId) return prev
+      return { ...prev, streaming: null }
+    }
+    if (isTriage(agentPath, watcher.deskRoot)) {
+      setTriage(apply)
+    } else {
+      setProject((prev) => (prev && prev.path === agentPath ? apply(prev) : prev))
     }
   }, [watcher.deskRoot])
 
@@ -193,7 +252,7 @@ export function DeskApp({ watcher }: Props) {
       const name = agentDisplayName(agentPath, watcher.deskRoot)
       setProject(prev => {
         if (!prev || prev.path !== agentPath) {
-          return { path: agentPath, name, logs: [line], active: false, waiting: false }
+          return { path: agentPath, name, logs: [line], active: false, waiting: false, streaming: null }
         }
         return { ...prev, logs: appendLog(prev.logs, line) }
       })
@@ -206,6 +265,9 @@ export function DeskApp({ watcher }: Props) {
     watcher.on('agent:waiting', onAgentWaiting)
     watcher.on('agent:done', onAgentDone)
     watcher.on('agent:error', onAgentError)
+    watcher.on('agent:stream:start', onAgentStreamStart)
+    watcher.on('agent:stream:delta', onAgentStreamDelta)
+    watcher.on('agent:stream:end', onAgentStreamEnd)
     watcher.on('queue', onQueue)
     watcher.on('fs', onFs)
     watcher.on('user:message', onUserMessage)
@@ -215,11 +277,27 @@ export function DeskApp({ watcher }: Props) {
       watcher.off('agent:waiting', onAgentWaiting)
       watcher.off('agent:done', onAgentDone)
       watcher.off('agent:error', onAgentError)
+      watcher.off('agent:stream:start', onAgentStreamStart)
+      watcher.off('agent:stream:delta', onAgentStreamDelta)
+      watcher.off('agent:stream:end', onAgentStreamEnd)
       watcher.off('queue', onQueue)
       watcher.off('fs', onFs)
       watcher.off('user:message', onUserMessage)
     }
-  }, [watcher, onAgentStart, onAgentLog, onAgentWaiting, onAgentDone, onAgentError, onQueue, onFs, onUserMessage])
+  }, [
+    watcher,
+    onAgentStart,
+    onAgentLog,
+    onAgentWaiting,
+    onAgentDone,
+    onAgentError,
+    onAgentStreamStart,
+    onAgentStreamDelta,
+    onAgentStreamEnd,
+    onQueue,
+    onFs,
+    onUserMessage,
+  ])
 
   useInput((input, key) => {
     if (key.escape || input === 'q' || input === '\x03') {

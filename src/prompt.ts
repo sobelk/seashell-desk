@@ -6,8 +6,11 @@
  *   2. Collecting every SYSTEM.md found along the way (outermost first)
  *   3. Appending own SCOPE.md (if present)
  *   4. Appending peer SCOPE.md files (siblings + direct children in the agent tree)
- *   5. Appending the agent's own AGENT.md
- *   6. Appending TOOLS.md
+ *   5. Appending TOOLS.md
+ *   6. Appending the agent's own MEMORY.md (if present) under a header naming
+ *      its path relative to desk/, so the agent can persist notes across runs.
+ *   7. Appending the agent's own AGENT.md under a "# Your AGENT.md file" header
+ *      so the session-specific instructions are the final and most salient block.
  *
  * Peer visibility uses the logical agent tree: the "parent" of an agent is the
  * nearest ancestor directory that also contains an AGENT.md (or DESK_ROOT if none).
@@ -22,8 +25,11 @@
  *   desk/projects/SYSTEM.md     (if it exists — project-group conventions)
  *   desk/projects/finance/SCOPE.md   (own scope)
  *   desk/projects/{x}/SCOPE.md  (sibling project scopes)
- *   desk/projects/finance/AGENT.md   (finance agent instructions)
  *   desk/TOOLS.md
+ *   desk/projects/finance/MEMORY.md  (if it exists — under
+ *                                     "# Your memory (projects/finance/MEMORY.md)" header)
+ *   desk/projects/finance/AGENT.md   (finance agent instructions, under
+ *                                     "# Your AGENT.md file" header)
  */
 
 import { existsSync, readFileSync, readdirSync } from 'fs'
@@ -112,6 +118,60 @@ function collectSystemFiles(agentDir: string): string[] {
     .filter(existsSync)
 }
 
+export interface AgentFile {
+  /** Absolute path on disk (or comma-joined list for the SYSTEM.md cascade). */
+  source: string
+  /** Full textual content as it would appear to the agent. */
+  content: string
+}
+
+export interface AgentFileSet {
+  /** AGENT.md is required — its presence is what makes a directory an agent. */
+  agent: AgentFile
+  /** Own SCOPE.md (not ancestors'). */
+  scope: AgentFile | null
+  /** Concatenated SYSTEM.md cascade, outermost first, separated by `\n\n---\n\n`. */
+  system: AgentFile | null
+  /** Own MEMORY.md. */
+  memory: AgentFile | null
+  /** Own JOURNAL.md. */
+  journal: AgentFile | null
+}
+
+/**
+ * Collect the per-agent source files (AGENT.md, SCOPE.md, MEMORY.md, JOURNAL.md)
+ * plus the inherited SYSTEM.md cascade for this agent. Used by the UI to show
+ * individual file contents in a tab bar.
+ */
+export function collectAgentFiles(agentMdPath: string): AgentFileSet {
+  const agentDir = path.dirname(path.resolve(agentMdPath))
+
+  const readIfExists = (filePath: string): AgentFile | null => {
+    if (!existsSync(filePath)) return null
+    return { source: filePath, content: readFileSync(filePath, 'utf8') }
+  }
+
+  const agentContent = readFileSync(agentMdPath, 'utf8')
+
+  const systemFiles = collectSystemFiles(agentDir)
+  const system: AgentFile | null = systemFiles.length === 0
+    ? null
+    : {
+        source: systemFiles.join(', '),
+        content: systemFiles
+          .map((f) => readFileSync(f, 'utf8').trim())
+          .join('\n\n---\n\n'),
+      }
+
+  return {
+    agent: { source: agentMdPath, content: agentContent },
+    scope: readIfExists(path.join(agentDir, 'SCOPE.md')),
+    system,
+    memory: readIfExists(path.join(agentDir, 'MEMORY.md')),
+    journal: readIfExists(path.join(agentDir, 'JOURNAL.md')),
+  }
+}
+
 export function buildSystemPrompt(agentMdPath: string): string {
   const agentDir = path.dirname(path.resolve(agentMdPath))
   const today = new Date().toISOString().slice(0, 10)
@@ -132,13 +192,35 @@ export function buildSystemPrompt(agentMdPath: string): string {
     ? `## Peer agent scopes\n\n${peerScopes.map((s) => s.content).join('\n\n---\n\n')}`
     : null
 
+  // Own MEMORY.md — persistent notes this agent has written for itself.
+  // Headered with the path relative to desk/ so the agent knows exactly
+  // which file to read/write when updating its memory.
+  const memoryPath = path.join(agentDir, 'MEMORY.md')
+  const memoryRel = path.relative(DESK_ROOT, memoryPath).split(path.sep).join('/')
+  const memoryBlock = existsSync(memoryPath)
+    ? [
+        `# Your memory (${memoryRel})`,
+        '',
+        readFileSync(memoryPath, 'utf8').trim(),
+      ].join('\n')
+    : null
+
+  const agentHeader = [
+    '# Your AGENT.md file',
+    '',
+    'What follows are specific instructions for this session:',
+    '',
+    agentMd.trim(),
+  ].join('\n')
+
   const sections: string[] = [
     `Today's date is ${today}.`,
     ...systemFiles.map((f) => readFileSync(f, 'utf8')),
     ...(ownScope ? [ownScope] : []),
     ...(peerScopeBlock ? [peerScopeBlock] : []),
-    agentMd.trim(),
     toolsMd.trim(),
+    ...(memoryBlock ? [memoryBlock] : []),
+    agentHeader,
   ]
 
   return sections

@@ -81,6 +81,18 @@ export interface RunAgentOptions {
    * all tool calls (name + input + output), and token usage. Used for logging.
    */
   onRound?: (data: RoundData) => void
+  /**
+   * Streaming callbacks for agent text blocks. Invoked once `onTextStart` at
+   * the start of each text content block, `onTextDelta` for each token/chunk
+   * streamed from the model, and `onTextEnd` once the block is complete.
+   *
+   * `streamId` is an opaque identifier unique to that text block (per run).
+   * When streaming callbacks are used, the runner does NOT also emit the
+   * block's text via `onLog`, to avoid duplication.
+   */
+  onTextStart?: (streamId: string) => void
+  onTextDelta?: (streamId: string, delta: string) => void
+  onTextEnd?: (streamId: string, fullText: string) => void
 }
 
 export interface ToolCallData {
@@ -132,7 +144,10 @@ function formatOutput(output: unknown): string {
   if ('saved' in obj) return `saved → ${obj.saved} (${obj.bytes} bytes)`
   if ('deleted' in obj) return `deleted ${obj.deleted}`
   if ('created' in obj) return `created ${obj.created}`
-  if ('id' in obj && 'paths' in obj) return `task ${obj.id}`
+  if ('id' in obj && 'paths' in obj) {
+    const verb = 'status' in obj || 'priority' in obj ? 'updated' : 'created'
+    return `task ${verb}: ${obj.id}`
+  }
   if ('entries' in obj && Array.isArray(obj.entries)) {
     const names = (obj.entries as Array<{ name: string }>).map((e) => e.name)
     return `[${names.join(', ')}]`
@@ -172,7 +187,12 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
     onLog,
     onWaiting,
     onRound,
+    onTextStart,
+    onTextDelta,
+    onTextEnd,
   } = options
+
+  const streamsTextBlocks = Boolean(onTextStart || onTextDelta || onTextEnd)
 
   const emit = (msg: string) => {
     if (onLog) onLog(msg)
@@ -220,25 +240,67 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
     logVerbose(`\n[agent] ── Round ${rounds + 1} ──────────────────────────`)
 
     onWaiting?.(true)
-    const response = await client.messages.create({
+
+    // We always stream: it lets us emit text deltas to the UI and costs no
+    // more than non-streaming. When no streaming callbacks are supplied, we
+    // still collect a final Message via `finalMessage()` and behave as before.
+    const stream = client.messages.stream({
       model,
       max_tokens: 8096,
       system: systemBlocks,
       tools: toolsWithCache,
       messages: withCacheControl(messages),
     })
+
+    // Map raw block index → streamId for text blocks. Index is stable within a
+    // single stream, but a fresh streamId per block is what callers want so
+    // the UI can render each agent utterance as its own entry.
+    const textStreamIdByIndex = new Map<number, string>()
+    const textBufferByIndex = new Map<number, string>()
+
+    if (streamsTextBlocks) {
+      stream.on('streamEvent', (event) => {
+        if (event.type === 'content_block_start' && event.content_block.type === 'text') {
+          const streamId = `${rounds + 1}-${event.index}-${Math.random().toString(36).slice(2, 10)}`
+          textStreamIdByIndex.set(event.index, streamId)
+          textBufferByIndex.set(event.index, '')
+          onTextStart?.(streamId)
+          return
+        }
+        if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
+          const streamId = textStreamIdByIndex.get(event.index)
+          if (!streamId) return
+          const buffer = (textBufferByIndex.get(event.index) ?? '') + event.delta.text
+          textBufferByIndex.set(event.index, buffer)
+          onTextDelta?.(streamId, event.delta.text)
+          return
+        }
+        if (event.type === 'content_block_stop') {
+          const streamId = textStreamIdByIndex.get(event.index)
+          if (!streamId) return
+          onTextEnd?.(streamId, textBufferByIndex.get(event.index) ?? '')
+          return
+        }
+      })
+    }
+
+    const response = await stream.finalMessage()
     onWaiting?.(false)
 
     // Add assistant turn to message history
     messages.push({ role: 'assistant', content: response.content })
 
-    // Log any text the agent emits (thinking out loud, narration, etc.)
+    // Log any text the agent emits (thinking out loud, narration, etc.).
+    // When streaming is wired up the UI already received the text via the
+    // delta callbacks, so we skip the trailing `[agent]` log to avoid dupes.
     const textBlocks = response.content.filter(
       (b): b is Anthropic.TextBlock => b.type === 'text',
     )
-    for (const block of textBlocks) {
-      const trimmed = block.text.trim()
-      if (trimmed) log(`[agent] ${trimmed}`)
+    if (!streamsTextBlocks) {
+      for (const block of textBlocks) {
+        const trimmed = block.text.trim()
+        if (trimmed) log(`[agent] ${trimmed}`)
+      }
     }
 
     // If the model stopped without using tools, we're done

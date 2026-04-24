@@ -2,13 +2,18 @@
  * DeskWatcher — core watch/queue/run logic as a reusable EventEmitter.
  *
  * Events:
- *   'fs'           (change: FileChange, agentPath: string | null, suppressed: boolean)
- *   'queue'        (running: string | null, queued: string[])
- *   'agent:start'  (agentPath: string, changes: FileChange[])
- *   'agent:log'    (agentPath: string, message: string)
- *   'agent:done'   (agentPath: string, rounds: number, hitLimit: boolean, response: string)
- *   'agent:error'  (agentPath: string, error: string)
- *   'user:message' (agentPath: string, message: string)
+ *   'fs'                  (change: FileChange, agentPath: string | null, suppressed: boolean)
+ *   'queue'               (running: string | null, queued: string[])
+ *   'agent:start'         (agentPath: string, changes: FileChange[])
+ *   'agent:log'           (agentPath: string, message: string)
+ *   'agent:stream:start'  (agentPath: string, streamId: string)
+ *   'agent:stream:delta'  (agentPath: string, streamId: string, delta: string)
+ *   'agent:stream:end'    (agentPath: string, streamId: string)
+ *   'agent:done'          (agentPath: string, rounds: number, hitLimit: boolean, response: string)
+ *   'agent:error'         (agentPath: string, error: string)
+ *   'user:message'        (agentPath: string, message: string)
+ *   'system-file'         (change: FileChange)  // AGENT.md / SCOPE.md / SYSTEM.md /
+ *                                               //   MEMORY.md / JOURNAL.md add/remove/modify
  */
 
 import { EventEmitter } from 'events'
@@ -56,9 +61,20 @@ function normalizeFilename(p: string): string {
 
 const ALWAYS_IGNORE = new Set(['TRIAGE_LOG.md', '.DS_Store'])
 
+/**
+ * System-level markdown files that configure an agent. Changes to these are
+ * surfaced via a dedicated `system-file` event so the UI can refresh, but they
+ * do NOT enqueue an agent run (we don't want editing AGENT.md to trigger the
+ * agent to re-process itself).
+ */
+const SYSTEM_LEVEL_FILES = new Set(['AGENT.md', 'SCOPE.md', 'SYSTEM.md', 'MEMORY.md', 'JOURNAL.md'])
+
+function isSystemLevelFile(relPath: string): boolean {
+  return SYSTEM_LEVEL_FILES.has(path.basename(relPath))
+}
+
 function isIgnored(relPath: string): boolean {
   const base = path.basename(relPath)
-  if (base === 'AGENT.md') return true
   if (ALWAYS_IGNORE.has(base)) return true
   if (relPath.startsWith('.git/')) return true
   return false
@@ -215,6 +231,17 @@ export class DeskWatcher extends EventEmitter {
       if (!filename) return
       const absPath = path.join(DESK_ROOT, filename)
       const relPath = normalizeFilename(filename.replace(/\\/g, '/'))
+
+      // System-level files (AGENT.md, SCOPE.md, SYSTEM.md, MEMORY.md, JOURNAL.md)
+      // get a dedicated event so the UI can refresh on-the-fly. They are NOT
+      // enqueued for agent runs to avoid an editing feedback loop.
+      if (isSystemLevelFile(relPath)) {
+        const event: FileChange['event'] =
+          eventType === 'rename' ? (existsSync(absPath) ? 'added' : 'removed') : 'modified'
+        this.emit('system-file', { event, path: relPath, ts: new Date().toISOString() })
+        return
+      }
+
       if (isIgnored(relPath)) return
 
       // Suppress self-loops; allow cross-agent handoffs
@@ -245,7 +272,8 @@ export class DeskWatcher extends EventEmitter {
   get deskRoot(): string { return DESK_ROOT }
 
   /** Scans DESK_ROOT recursively for directories containing an AGENT.md.
-   *  Returns paths relative to DESK_ROOT (e.g. ['input', 'projects/finance']), sorted.
+   *  Returns paths relative to DESK_ROOT (e.g. ['', 'projects/finance'], sorted).
+   *  The empty string '' represents the root desk/ agent if DESK_ROOT/AGENT.md exists.
    */
   getAgentPaths(): string[] {
     const results: string[] = []
@@ -253,7 +281,7 @@ export class DeskWatcher extends EventEmitter {
       try {
         const entries = readdirSync(dir, { withFileTypes: true })
         const hasAgent = entries.some((e) => e.isFile() && e.name === 'AGENT.md')
-        if (hasAgent && relDir !== '') results.push(relDir)
+        if (hasAgent) results.push(relDir)
         for (const entry of entries) {
           if (entry.isDirectory()) {
             const childRel = relDir ? `${relDir}/${entry.name}` : entry.name
@@ -427,7 +455,7 @@ export class DeskWatcher extends EventEmitter {
 
   // Called after tool execution — tracks paths from tool output (e.g. task file paths)
   private trackToolOutput(toolName: string, _input: unknown, output: unknown) {
-    if (toolName === 'create_task' || toolName === 'complete_task') {
+    if (toolName === 'create_task' || toolName === 'update_task') {
       if (typeof output === 'object' && output !== null && 'paths' in output) {
         const paths = (output as { paths: unknown }).paths
         if (Array.isArray(paths)) paths.forEach((p) => this.trackPath(p))
@@ -476,6 +504,9 @@ export class DeskWatcher extends EventEmitter {
       onToolStart: (name, input) => this.preTrackToolInput(name, input),
       onToolExecuted: (name, input, output) => this.trackToolOutput(name, input, output),
       onRound: (data) => logger.logRound(data),
+      onTextStart: (streamId) => this.emit('agent:stream:start', agentMdPath, streamId),
+      onTextDelta: (streamId, delta) => this.emit('agent:stream:delta', agentMdPath, streamId, delta),
+      onTextEnd: (streamId) => this.emit('agent:stream:end', agentMdPath, streamId),
       getPendingInjection,
       maxRounds: 80,
     })
