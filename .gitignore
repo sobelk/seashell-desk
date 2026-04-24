@@ -3,6 +3,7 @@ logs/
 .credentials/
 node_modules/
 src/.env*
+!src/.env.example
 src/.web-build/
 src/🐍/
 src/camera/.tmp/
