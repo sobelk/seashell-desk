@@ -1,9 +1,24 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { applyDeskEvent, createInitialSnapshot } from './reducer.js'
-import type { DeskSnapshot, ServerMessage } from './protocol.js'
+import type { DeskEvent, DeskSnapshot, ServerMessage } from './protocol.js'
 
 interface UseDeskConnectionOptions {
   baseUrl: string
+  onEvent?: (event: DeskEvent) => void
+}
+
+export type AgentFileTabKey = 'instructions' | 'agent' | 'scope' | 'system' | 'memory' | 'journal'
+
+export interface AgentFileTab {
+  key: AgentFileTabKey
+  label: string
+  content: string
+  source: string
+}
+
+export interface AgentFilesResponse {
+  path: string
+  tabs: AgentFileTab[]
 }
 
 interface UseDeskConnectionResult {
@@ -11,6 +26,9 @@ interface UseDeskConnectionResult {
   connected: boolean
   error: string | null
   sendMessage: (agentRelPath: string, message: string) => Promise<void>
+  updateTask: (taskPath: string, updates: { status?: 'open' | 'done' | 'ignored'; priority?: 'critical' | 'high' | 'medium' | 'low' }) => Promise<unknown>
+  getTaskFile: (taskPath: string) => Promise<{ path: string; content: string }>
+  getAgentFiles: (agentRelPath: string) => Promise<AgentFilesResponse>
   uploadInputPhoto: (photo: Blob, options?: { filenameBase?: string }) => Promise<{ filename: string; relativePath: string; sizeBytes: number }>
   detectScannerDocument: (photo: Blob) => Promise<{
     quad: [[number, number], [number, number], [number, number], [number, number]] | null
@@ -37,10 +55,15 @@ function httpToWs(baseUrl: string): string {
   return `ws://${baseUrl}`
 }
 
-export function useDeskConnection({ baseUrl }: UseDeskConnectionOptions): UseDeskConnectionResult {
+export function useDeskConnection({ baseUrl, onEvent }: UseDeskConnectionOptions): UseDeskConnectionResult {
   const [snapshot, setSnapshot] = useState<DeskSnapshot | null>(null)
   const [connected, setConnected] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const onEventRef = useRef(onEvent)
+
+  useEffect(() => {
+    onEventRef.current = onEvent
+  }, [onEvent])
 
   useEffect(() => {
     let ws: WebSocket | null = null
@@ -50,14 +73,22 @@ export function useDeskConnection({ baseUrl }: UseDeskConnectionOptions): UseDes
     const connect = async () => {
       try {
         const response = await fetch(`${baseUrl}/api/snapshot`)
+        if (isStopped) return
         if (!response.ok) throw new Error(`Snapshot request failed (${response.status})`)
         const initial = (await response.json()) as DeskSnapshot
+        if (isStopped) return
         setSnapshot(initial)
         setError(null)
       } catch (err) {
+        if (isStopped) return
         const message = err instanceof Error ? err.message : String(err)
         setError(message)
       }
+
+      // If the effect was torn down (e.g. React.StrictMode double-invoke in dev)
+      // while the snapshot fetch was in flight, skip opening a WebSocket so we
+      // don't leak a second, permanent connection that duplicates every event.
+      if (isStopped) return
 
       ws = new WebSocket(`${httpToWs(baseUrl)}/ws`)
       ws.onopen = () => {
@@ -82,6 +113,11 @@ export function useDeskConnection({ baseUrl }: UseDeskConnectionOptions): UseDes
           if (message.type === 'snapshot') {
             setSnapshot(message.snapshot)
             return
+          }
+          try {
+            onEventRef.current?.(message.event)
+          } catch {
+            // subscriber errors must not break the WS pipeline
           }
           setSnapshot((prev) => {
             if (!prev) return null
@@ -115,6 +151,34 @@ export function useDeskConnection({ baseUrl }: UseDeskConnectionOptions): UseDes
         const text = await response.text()
         throw new Error(text || `Send failed (${response.status})`)
       }
+    },
+    async updateTask(taskPath: string, updates: { status?: 'open' | 'done' | 'ignored'; priority?: 'critical' | 'high' | 'medium' | 'low' }) {
+      const response = await fetch(`${baseUrl}/api/tasks/update`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ path: taskPath, ...updates }),
+      })
+      if (!response.ok) {
+        const text = await response.text()
+        throw new Error(text || `Task update failed (${response.status})`)
+      }
+      return response.json()
+    },
+    async getTaskFile(taskPath: string) {
+      const response = await fetch(`${baseUrl}/api/tasks/file?path=${encodeURIComponent(taskPath)}`)
+      if (!response.ok) {
+        const text = await response.text()
+        throw new Error(text || `Task file read failed (${response.status})`)
+      }
+      return response.json() as Promise<{ path: string; content: string }>
+    },
+    async getAgentFiles(agentRelPath: string) {
+      const response = await fetch(`${baseUrl}/api/agents/files?path=${encodeURIComponent(agentRelPath)}`)
+      if (!response.ok) {
+        const text = await response.text()
+        throw new Error(text || `Agent files fetch failed (${response.status})`)
+      }
+      return response.json() as Promise<AgentFilesResponse>
     },
     async uploadInputPhoto(photo: Blob, options?: { filenameBase?: string }) {
       const formData = new FormData()
@@ -203,6 +267,9 @@ export function useDeskConnection({ baseUrl }: UseDeskConnectionOptions): UseDes
     connected,
     error,
     sendMessage: api.sendMessage,
+    updateTask: api.updateTask,
+    getTaskFile: api.getTaskFile,
+    getAgentFiles: api.getAgentFiles,
     uploadInputPhoto: api.uploadInputPhoto,
     detectScannerDocument: api.detectScannerDocument,
     scanScannerDocument: api.scanScannerDocument,

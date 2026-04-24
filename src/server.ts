@@ -1,8 +1,10 @@
 #!/usr/bin/env bun
 
 import path from 'path'
-import { existsSync, watch } from 'fs'
+import { existsSync, readFileSync, watch } from 'fs'
 import { DeskHost } from './server/desk-host.js'
+import { buildSystemPrompt, collectAgentFiles } from './prompt.js'
+import { updateTaskAtRelativePath } from './tools/tasks.js'
 import {
   clearScannerBounds,
   detectScannerDocument,
@@ -139,6 +141,112 @@ const server = BunRuntime.serve({
           return jsonResponse({ ok: true })
         })
         .catch(() => new Response('Invalid JSON', { status: 400 }))
+    }
+
+    if (url.pathname === '/api/tasks/update' && req.method === 'POST') {
+      return req.json()
+        .then((body: unknown) => {
+          if (typeof body !== 'object' || body === null) {
+            return new Response('Invalid body', { status: 400 })
+          }
+
+          const { path: taskPath, status, priority } = body as {
+            path?: unknown
+            status?: unknown
+            priority?: unknown
+          }
+
+          if (typeof taskPath !== 'string' || taskPath.length === 0) {
+            return new Response('path is required', { status: 400 })
+          }
+          if (status !== undefined && status !== 'open' && status !== 'done' && status !== 'ignored') {
+            return new Response('invalid status', { status: 400 })
+          }
+          if (priority !== undefined && priority !== 'critical' && priority !== 'high' && priority !== 'medium' && priority !== 'low') {
+            return new Response('invalid priority', { status: 400 })
+          }
+          if (status === undefined && priority === undefined) {
+            return new Response('status or priority is required', { status: 400 })
+          }
+
+          return jsonResponse(updateTaskAtRelativePath(taskPath, {
+            status: status as 'open' | 'done' | 'ignored' | undefined,
+            priority: priority as 'critical' | 'high' | 'medium' | 'low' | undefined,
+          }))
+        })
+        .catch((error: unknown) => {
+          const message = error instanceof Error ? error.message : String(error)
+          return new Response(message || 'Task update failed', { status: 400 })
+        })
+    }
+
+    if (url.pathname === '/api/agents/files' && req.method === 'GET') {
+      const relPath = url.searchParams.get('path')
+      if (relPath === null) return new Response('path is required', { status: 400 })
+
+      const normalized = relPath.replace(/^\/+|\/+$/g, '')
+      const deskRoot = host.getSnapshot().deskRoot
+      const agentDir = normalized ? path.resolve(deskRoot, normalized) : deskRoot
+      if (agentDir !== deskRoot && !agentDir.startsWith(`${deskRoot}${path.sep}`)) {
+        return new Response('path escapes desk root', { status: 400 })
+      }
+      const agentMdPath = path.join(agentDir, 'AGENT.md')
+      if (!existsSync(agentMdPath)) {
+        return new Response('AGENT.md not found for this path', { status: 404 })
+      }
+
+      try {
+        const instructions = buildSystemPrompt(agentMdPath)
+        const files = collectAgentFiles(agentMdPath)
+
+        const tabs: Array<{ key: string; label: string; content: string; source: string }> = [
+          {
+            key: 'instructions',
+            label: 'INSTRUCTIONS',
+            content: instructions,
+            source: '(assembled: SYSTEM + SCOPEs + TOOLS + MEMORY + AGENT)',
+          },
+          { key: 'agent', label: 'AGENT.md', content: files.agent.content, source: files.agent.source },
+        ]
+        if (files.scope) {
+          tabs.push({ key: 'scope', label: 'SCOPE.md', content: files.scope.content, source: files.scope.source })
+        }
+        if (files.system) {
+          tabs.push({
+            key: 'system',
+            label: 'SYSTEM.md (inherited)',
+            content: files.system.content,
+            source: files.system.source,
+          })
+        }
+        if (files.memory) {
+          tabs.push({ key: 'memory', label: 'MEMORY.md', content: files.memory.content, source: files.memory.source })
+        }
+        if (files.journal) {
+          tabs.push({ key: 'journal', label: 'JOURNAL.md', content: files.journal.content, source: files.journal.source })
+        }
+
+        return jsonResponse({ path: normalized, tabs })
+      } catch (error: unknown) {
+        const message = error instanceof Error ? error.message : String(error)
+        return new Response(message || 'Failed to read agent files', { status: 500 })
+      }
+    }
+
+    if (url.pathname === '/api/tasks/file' && req.method === 'GET') {
+      const relPath = url.searchParams.get('path')
+      if (!relPath) return new Response('path is required', { status: 400 })
+      if (!relPath.endsWith('.md') || !relPath.includes('/tasks/')) {
+        return new Response('path must point to a task markdown file', { status: 400 })
+      }
+
+      const deskRoot = host.getSnapshot().deskRoot
+      const resolved = path.resolve(deskRoot, relPath)
+      if (!resolved.startsWith(`${deskRoot}${path.sep}`)) {
+        return new Response('path escapes desk root', { status: 400 })
+      }
+      if (!existsSync(resolved)) return new Response('task file not found', { status: 404 })
+      return jsonResponse({ path: relPath, content: readFileSync(resolved, 'utf8') })
     }
 
     if (url.pathname === '/api/input/photo' && req.method === 'POST') {
