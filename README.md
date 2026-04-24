@@ -1,4 +1,4 @@
-# Seashell Desk
+# 🐚 Seashell Desk
 
 A set of tools and conventions for drowning less in the ocean of modernity.
 
