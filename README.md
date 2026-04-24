@@ -30,7 +30,8 @@ Giving the AI a way to create tasks turns out to be a good way for it to ask me 
 cd src
 cp .env.example .env && $EDITOR .env    # at minimum, set ANTHROPIC_API_KEY
 bun install
+cp -R ../examples/desk/* ../desk/       # sample SYSTEM.md + a few project agents
 bun run desk                            # web UI + file watcher at http://localhost:4312
 ```
 
-Optional integrations — Gmail sync, Google Calendar, camera scanning — are documented in `.env.example`.
+See `examples/` for a walk-through of what a populated desk looks like. Optional integrations — Gmail sync, Google Calendar, camera scanning — are documented in `.env.example`.
